@@ -48,57 +48,102 @@ spec:
               pool types.
             properties:
               claimUIDCustomField:
+                description: ClaimUIDCustomField is the NetBox custom field used to
+                  store the Kubernetes IPAddressClaim UID.
+                type: string
+              clusterName:
+                description: |-
+                  ClusterName associates the pool with a Cluster API Cluster for clusterctl move. When set, the
+                  controller mirrors it to the standard cluster.x-k8s.io/cluster-name label on the pool.
                 type: string
               connectionSecretRef:
-                description: NamespacedSecretReference points at the secret containing
-                  NetBox connection details.
+                description: ConnectionSecretRef points at the Secret that contains
+                  the NetBox URL, token, and optional TLS settings.
                 properties:
                   name:
+                    description: Name is the Secret name.
+                    minLength: 1
                     type: string
                   namespace:
+                    description: |-
+                      Namespace is the Secret namespace. For namespaced pools this should normally be omitted so the
+                      pool namespace is used. Global pools should set it explicitly because they are cluster-scoped.
                     type: string
                 required:
                 - name
                 type: object
               ipAddressStatus:
+                description: IPAddressStatus is the NetBox status assigned to newly
+                  allocated IP addresses.
                 type: string
               metadataDefaults:
-                description: NetBoxMetadata carries the supported v1 metadata mapping
-                  surface.
+                description: MetadataDefaults defines the default NetBox fields applied
+                  to each allocation before claim-level overrides.
                 properties:
                   customFields:
                     additionalProperties:
                       type: string
+                    description: CustomFields maps NetBox custom field names to string
+                      values.
                     type: object
                   dnsName:
+                    description: DNSName sets the DNS name stored on the allocated
+                      IP address.
                     type: string
                   tags:
+                    description: Tags are NetBox tags to attach to allocated IP addresses.
+                      Claim annotations can override this list.
                     items:
                       type: string
                     type: array
+                    x-kubernetes-list-type: set
                   tenantID:
+                    description: TenantID sets the NetBox tenant on allocated IP addresses.
                     format: int32
+                    minimum: 1
                     type: integer
                   vrfID:
+                    description: VRFID sets the NetBox VRF on allocated IP addresses.
                     format: int32
+                    minimum: 1
                     type: integer
                 type: object
               ownershipTag:
+                description: OwnershipTag is added to every allocated NetBox IP address
+                  so the provider can find and clean it up later.
                 type: string
               prefixes:
+                description: |-
+                  Prefixes lists the candidate NetBox prefixes to allocate from. Prefixes are tried in order until
+                  an address is allocated or all options are exhausted.
                 items:
                   description: NetBoxPrefixReference identifies a NetBox prefix by
                     ID or CIDR.
                   properties:
                     cidr:
+                      description: CIDR is the prefix in CIDR notation. The provider
+                        resolves it to a unique NetBox prefix before allocation.
+                      minLength: 1
                       type: string
                     id:
+                      description: ID is the NetBox prefix primary key. Use this when
+                        the backing prefix object is already known.
                       format: int32
+                      minimum: 1
                       type: integer
                     vrfID:
+                      description: VRFID narrows CIDR resolution to a specific NetBox
+                        VRF. It only applies when CIDR is used.
                       format: int32
+                      minimum: 1
                       type: integer
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of id or cidr must be set
+                    rule: has(self.id) != has(self.cidr)
+                  - message: vrfID can only be set when cidr is used
+                    rule: '!has(self.vrfID) || has(self.cidr)'
+                minItems: 1
                 type: array
             required:
             - connectionSecretRef
@@ -109,16 +154,20 @@ spec:
               pool types.
             properties:
               addresses:
-                description: NetBoxPoolStatusAddresses summarises current Kubernetes-side
-                  allocations.
+                description: Addresses summarises the current number of Kubernetes-side
+                  allocations using this pool.
                 properties:
                   allocated:
+                    description: Allocated is the number of Kubernetes IPAddress objects
+                      currently referencing the pool.
                     format: int32
                     type: integer
                 required:
                 - allocated
                 type: object
               conditions:
+                description: Conditions reports the current reconciliation state of
+                  the pool.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -178,9 +227,13 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               observedGeneration:
+                description: ObservedGeneration is the most recent metadata.generation
+                  processed by the controller.
                 format: int64
                 type: integer
               resolvedPrefixes:
+                description: ResolvedPrefixes reports the concrete NetBox prefix IDs
+                  that the controller resolved for this pool.
                 items:
                   format: int32
                   type: integer

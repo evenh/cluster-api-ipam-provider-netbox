@@ -28,13 +28,14 @@ import (
 
 // GlobalNetBoxIPPool is the Schema for the globalnetboxippools API.
 type GlobalNetBoxIPPool struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec GlobalNetBoxIPPoolSpec `json:"spec"`
-	Status NetBoxIPPoolStatus `json:"status,omitempty"`
+	Spec              GlobalNetBoxIPPoolSpec `json:"spec"`
+	Status            NetBoxIPPoolStatus     `json:"status,omitempty"`
 }
 
 // GlobalNetBoxIPPoolSpec defines the desired state of GlobalNetBoxIPPool.
+// +kubebuilder:validation:XValidation:rule="size(self.connectionSecretRef.namespace) > 0",message="connectionSecretRef.namespace must be set for global pools"
 type GlobalNetBoxIPPoolSpec struct {
 	NetBoxIPPoolSpec `json:",inline"`
 }

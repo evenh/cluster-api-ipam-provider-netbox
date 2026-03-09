@@ -25,62 +25,99 @@ const (
 
 // NamespacedSecretReference points at the secret containing NetBox connection details.
 type NamespacedSecretReference struct {
+	// Name is the Secret name.
+	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
+	// Namespace is the Secret namespace. For namespaced pools this should normally be omitted so the
+	// pool namespace is used. Global pools should set it explicitly because they are cluster-scoped.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 }
 
 // NetBoxPrefixReference identifies a NetBox prefix by ID or CIDR.
+// +kubebuilder:validation:XValidation:rule="has(self.id) != has(self.cidr)",message="exactly one of id or cidr must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.vrfID) || has(self.cidr)",message="vrfID can only be set when cidr is used"
 type NetBoxPrefixReference struct {
+	// ID is the NetBox prefix primary key. Use this when the backing prefix object is already known.
 	// +optional
+	// +kubebuilder:validation:Minimum=1
 	ID *int32 `json:"id,omitempty"`
+	// CIDR is the prefix in CIDR notation. The provider resolves it to a unique NetBox prefix before allocation.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	CIDR string `json:"cidr,omitempty"`
+	// VRFID narrows CIDR resolution to a specific NetBox VRF. It only applies when CIDR is used.
 	// +optional
+	// +kubebuilder:validation:Minimum=1
 	VRFID *int32 `json:"vrfID,omitempty"`
 }
 
 // NetBoxMetadata carries the supported v1 metadata mapping surface.
 type NetBoxMetadata struct {
+	// TenantID sets the NetBox tenant on allocated IP addresses.
 	// +optional
+	// +kubebuilder:validation:Minimum=1
 	TenantID *int32 `json:"tenantID,omitempty"`
+	// VRFID sets the NetBox VRF on allocated IP addresses.
 	// +optional
+	// +kubebuilder:validation:Minimum=1
 	VRFID *int32 `json:"vrfID,omitempty"`
+	// DNSName sets the DNS name stored on the allocated IP address.
 	// +optional
 	DNSName string `json:"dnsName,omitempty"`
+	// Tags are NetBox tags to attach to allocated IP addresses. Claim annotations can override this list.
+	// +listType=set
 	// +optional
 	Tags []string `json:"tags,omitempty"`
+	// CustomFields maps NetBox custom field names to string values.
 	// +optional
 	CustomFields map[string]string `json:"customFields,omitempty"`
 }
 
 // NetBoxIPPoolSpec defines the desired state shared by both pool types.
 type NetBoxIPPoolSpec struct {
+	// ClusterName associates the pool with a Cluster API Cluster for clusterctl move. When set, the
+	// controller mirrors it to the standard cluster.x-k8s.io/cluster-name label on the pool.
+	// +optional
+	ClusterName string `json:"clusterName,omitempty"`
+	// ConnectionSecretRef points at the Secret that contains the NetBox URL, token, and optional TLS settings.
 	ConnectionSecretRef NamespacedSecretReference `json:"connectionSecretRef"`
-	Prefixes            []NetBoxPrefixReference   `json:"prefixes"`
+	// Prefixes lists the candidate NetBox prefixes to allocate from. Prefixes are tried in order until
+	// an address is allocated or all options are exhausted.
+	// +kubebuilder:validation:MinItems=1
+	Prefixes []NetBoxPrefixReference `json:"prefixes"`
+	// MetadataDefaults defines the default NetBox fields applied to each allocation before claim-level overrides.
 	// +optional
 	MetadataDefaults NetBoxMetadata `json:"metadataDefaults,omitempty"`
+	// OwnershipTag is added to every allocated NetBox IP address so the provider can find and clean it up later.
 	// +optional
 	OwnershipTag string `json:"ownershipTag,omitempty"`
+	// ClaimUIDCustomField is the NetBox custom field used to store the Kubernetes IPAddressClaim UID.
 	// +optional
 	ClaimUIDCustomField string `json:"claimUIDCustomField,omitempty"`
+	// IPAddressStatus is the NetBox status assigned to newly allocated IP addresses.
 	// +optional
 	IPAddressStatus string `json:"ipAddressStatus,omitempty"`
 }
 
 // NetBoxPoolStatusAddresses summarises current Kubernetes-side allocations.
 type NetBoxPoolStatusAddresses struct {
+	// Allocated is the number of Kubernetes IPAddress objects currently referencing the pool.
 	Allocated int32 `json:"allocated"`
 }
 
 // NetBoxIPPoolStatus defines the observed state shared by both pool types.
 type NetBoxIPPoolStatus struct {
+	// ObservedGeneration is the most recent metadata.generation processed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// Addresses summarises the current number of Kubernetes-side allocations using this pool.
 	// +optional
 	Addresses *NetBoxPoolStatusAddresses `json:"addresses,omitempty"`
+	// ResolvedPrefixes reports the concrete NetBox prefix IDs that the controller resolved for this pool.
 	// +optional
 	ResolvedPrefixes []int32 `json:"resolvedPrefixes,omitempty"`
+	// Conditions reports the current reconciliation state of the pool.
 	// +listType=map
 	// +listMapKey=type
 	// +optional

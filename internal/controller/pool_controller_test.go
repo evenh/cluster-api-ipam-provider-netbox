@@ -8,6 +8,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
@@ -34,6 +35,9 @@ func TestReconcilePoolStatus(t *testing.T) {
 				Name:       "pool",
 				Namespace:  "default",
 				Generation: 3,
+			},
+			Spec: ipamv1alpha1.NetBoxIPPoolSpec{
+				ClusterName: "test-cluster",
 			},
 		}
 		address := &ipamv1.IPAddress{
@@ -75,8 +79,35 @@ func TestReconcilePoolStatus(t *testing.T) {
 		if pool.Status.Addresses == nil || pool.Status.Addresses.Allocated != 1 {
 			t.Fatalf("unexpected address status: %#v", pool.Status.Addresses)
 		}
+		if got := pool.Labels[clusterv1.ClusterNameLabel]; got != "test-cluster" {
+			t.Fatalf("unexpected cluster label: %q", got)
+		}
 		if len(pool.Status.Conditions) != 1 || pool.Status.Conditions[0].Status != metav1.ConditionTrue {
 			t.Fatalf("unexpected conditions: %#v", pool.Status.Conditions)
+		}
+	})
+
+	t.Run("preserves existing move label when spec cluster name is empty", func(t *testing.T) {
+		pool := &ipamv1alpha1.NetBoxIPPool{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pool",
+				Namespace: "default",
+				Labels: map[string]string{
+					clusterv1.ClusterNameLabel: "existing-cluster",
+				},
+			},
+		}
+
+		k8sClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithIndex(&ipamv1.IPAddress{}, index.IPAddressPoolRefCombinedField, index.IPAddressByCombinedPoolRef).
+			Build()
+
+		if err := reconcilePoolStatus(ctx, k8sClient, pool, ipamv1alpha1.NetBoxIPPoolKind); err != nil {
+			t.Fatalf("reconcilePoolStatus() error = %v", err)
+		}
+		if got := pool.Labels[clusterv1.ClusterNameLabel]; got != "existing-cluster" {
+			t.Fatalf("unexpected cluster label: %q", got)
 		}
 	})
 

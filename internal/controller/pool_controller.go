@@ -22,6 +22,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -34,6 +35,7 @@ const poolFinalizer = "ipam.cluster.x-k8s.io/pool-protection"
 
 type statusPool interface {
 	client.Object
+	PoolSpec() *ipamv1alpha1.NetBoxIPPoolSpec
 	PoolStatus() *ipamv1alpha1.NetBoxIPPoolStatus
 }
 
@@ -53,6 +55,7 @@ func reconcilePoolStatus(ctx context.Context, c client.Client, pool statusPool, 
 		Message:            "pool is ready to serve claims",
 		ObservedGeneration: pool.GetGeneration(),
 	}}
+	ensureClusterNameLabel(pool, pool.PoolSpec().ClusterName)
 
 	if pool.GetDeletionTimestamp().IsZero() {
 		controllerutil.AddFinalizer(pool, poolFinalizer)
@@ -63,6 +66,18 @@ func reconcilePoolStatus(ctx context.Context, c client.Client, pool statusPool, 
 	}
 	controllerutil.RemoveFinalizer(pool, poolFinalizer)
 	return nil
+}
+
+func ensureClusterNameLabel(pool client.Object, clusterName string) {
+	if clusterName == "" {
+		return
+	}
+	labels := pool.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[clusterv1.ClusterNameLabel] = clusterName
+	pool.SetLabels(labels)
 }
 
 func listAddressesInUse(ctx context.Context, c client.Client, namespace, kind, name string) ([]ipamv1.IPAddress, error) {
