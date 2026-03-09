@@ -9,6 +9,9 @@
 ### Project decisions
 - The provider-specific pool APIs use `ipam.cluster.x-k8s.io/v1alpha1`.
 - Cluster API integration should target the latest Cluster API IPAM contract in use by the project.
+- The repository target remains Go `1.26`; Go `1.25.x` is only a temporary local toolchain override for Chainsaw-related tasks and should not be committed as the repo baseline.
+- NetBox integration is implemented with repo-owned JSON clients; do not reintroduce `go-netbox` unless there is a concrete maintenance reason to accept generated-client coupling again.
+- Pool CRDs expose an optional `spec.clusterName`; the pool reconciler mirrors it into the standard `cluster.x-k8s.io/cluster-name` label so pools can participate in `clusterctl move`.
 
 ### Confirmed environment facts
 - The repository started effectively empty and must be bootstrapped from scratch.
@@ -18,7 +21,11 @@
 - `controller-gen paths=./...` will also traverse temporary nested scaffold modules under the repo root and can fail on their unrelated module state; generation commands should target the real package trees or those temp dirs should be removed intentionally.
 - The repository pins `controller-gen` to `v0.20.1`; generated CRDs and RBAC should be emitted with `bin/controller-gen`, not an older globally installed binary.
 - `sigs.k8s.io/cluster-api-ipam-provider-in-cluster v1.0.3` is not compatible with CAPI `v1.12.3`; it still imports removed `cluster-api` `v1beta1` packages.
-- `go-netbox/v4` paginated list responses use concrete `int32` `Count` fields, not pointer counts.
-- `go-netbox/v4` models tenant and VRF request fields as one-of wrappers and need `Int32AsASNRangeRequestTenant` / `Int32AsIPAddressRequestVrf` helpers for simple ID assignment.
+- All NetBox HTTP calls in this repo should set the shared custom `User-Agent` string from `internal/netbox.UserAgent`.
 - In this sandbox, envtest cannot bind a local control-plane port (`listen tcp 127.0.0.1:0: bind: operation not permitted`), so controller and envtest suites require elevated execution to run here.
 - Cluster API provider repositories still use `metadata.yaml` with `apiVersion: clusterctl.cluster.x-k8s.io/v1alpha3`; the release series should advertise the provider contract separately (`v1beta2` here).
+- NetBox `v4.3-3.3.0` serves `/api/` as unauthenticated `403 Forbidden`; the e2e readiness check should treat that as healthy rather than waiting for `200`.
+- NetBox bootstrap API tokens created via `SUPERUSER_API_TOKEN` must fit the backing `varchar(40)` limit.
+- NetBox rejects unknown IP address custom field names in allocation payloads; any custom fields referenced by pool metadata or claim annotations must already exist in NetBox, so the e2e harness must seed them explicitly.
+- Chainsaw `v0.2.14` configuration requires `metadata.name`; `skip delete` behavior is controlled by the CLI `--skip-delete` flag rather than `spec.cleanup`.
+- The e2e harness runs successfully with the repo’s Go `1.26` baseline as long as `chainsaw` is already installed; the temporary Go `1.25.x` workaround is only needed for Chainsaw-specific tooling paths, not for executing the provider’s e2e suite.
