@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- ipam_v1alpha1_netboxippool.yaml
+- ipam_v1alpha1_globalnetboxippool.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
