@@ -182,6 +182,52 @@ func TestEnsureAddress(t *testing.T) {
 		}
 	})
 
+	t.Run("does not reallocate when address is already set", func(t *testing.T) {
+		fakeNetBox := &fakeNetBoxClient{
+			resolvedPrefixIDs: []int32{100, 200},
+			allocations: map[int32]fakeAllocationResult{
+				100: {
+					address: &nb.AllocatedAddress{ID: 42, Address: "10.0.0.5", Prefix: 24},
+				},
+			},
+		}
+		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy()).Build()
+		handler := &netboxClaimHandler{
+			Client: k8sClient,
+			claim:  claim.DeepCopy(),
+			pool:   pool.DeepCopy(),
+			newClientFunc: func(nb.ConnectionConfig) (nb.Client, error) {
+				return fakeNetBox, nil
+			},
+		}
+
+		address := &ipamv1.IPAddress{
+			Spec: ipamv1.IPAddressSpec{
+				Address: "10.0.0.9",
+				Prefix:  int32Ptr(24),
+			},
+		}
+		res, err := handler.EnsureAddress(ctx, address)
+		if err != nil || res != nil {
+			t.Fatalf("EnsureAddress() error = %v result = %#v", err, res)
+		}
+		if address.Spec.Address != "10.0.0.9" {
+			t.Fatalf("unexpected address mutation: %#v", address.Spec)
+		}
+		if address.Spec.Prefix == nil || *address.Spec.Prefix != 24 {
+			t.Fatalf("unexpected prefix mutation: %#v", address.Spec.Prefix)
+		}
+		if len(fakeNetBox.allocateCalls) != 0 {
+			t.Fatalf("unexpected allocate calls: %#v", fakeNetBox.allocateCalls)
+		}
+		if fakeNetBox.ensureFieldName != "" {
+			t.Fatalf("unexpected custom field check: %q", fakeNetBox.ensureFieldName)
+		}
+		if fakeNetBox.lastRequest != nil {
+			t.Fatalf("unexpected allocation request: %#v", fakeNetBox.lastRequest)
+		}
+	})
+
 	t.Run("requeues when every prefix is exhausted", func(t *testing.T) {
 		fakeNetBox := &fakeNetBoxClient{
 			resolvedPrefixIDs: []int32{100, 200},
@@ -242,7 +288,14 @@ func TestReleaseAddress(t *testing.T) {
 		fakeNetBox := &fakeNetBoxClient{
 			findResult: &nb.AllocatedAddress{ID: 42, Address: "10.0.0.5", Prefix: 24},
 		}
-		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy()).Build()
+		address := &ipamv1.IPAddress{
+			ObjectMeta: metav1.ObjectMeta{Name: "claim", Namespace: "default"},
+			Spec: ipamv1.IPAddressSpec{
+				Address: "10.0.0.5",
+				Prefix:  int32Ptr(24),
+			},
+		}
+		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy(), address).Build()
 		handler := &netboxClaimHandler{
 			Client: k8sClient,
 			claim:  claim.DeepCopy(),
@@ -257,6 +310,39 @@ func TestReleaseAddress(t *testing.T) {
 			t.Fatalf("ReleaseAddress() error = %v result = %#v", err, res)
 		}
 		if len(fakeNetBox.deleteCalls) != 1 || fakeNetBox.deleteCalls[0] != 42 {
+			t.Fatalf("unexpected delete calls: %#v", fakeNetBox.deleteCalls)
+		}
+	})
+
+	t.Run("falls back to address lookup when claim uid lookup misses", func(t *testing.T) {
+		fakeNetBox := &fakeNetBoxClient{
+			findByAddressResult: &nb.AllocatedAddress{ID: 51, Address: "10.0.0.6", Prefix: 24},
+		}
+		address := &ipamv1.IPAddress{
+			ObjectMeta: metav1.ObjectMeta{Name: "claim", Namespace: "default"},
+			Spec: ipamv1.IPAddressSpec{
+				Address: "10.0.0.6",
+				Prefix:  int32Ptr(24),
+			},
+		}
+		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy(), address).Build()
+		handler := &netboxClaimHandler{
+			Client: k8sClient,
+			claim:  claim.DeepCopy(),
+			pool:   pool.DeepCopy(),
+			newClientFunc: func(nb.ConnectionConfig) (nb.Client, error) {
+				return fakeNetBox, nil
+			},
+		}
+
+		res, err := handler.ReleaseAddress(ctx)
+		if err != nil || res != nil {
+			t.Fatalf("ReleaseAddress() error = %v result = %#v", err, res)
+		}
+		if len(fakeNetBox.findByAddressCalls) != 1 || fakeNetBox.findByAddressCalls[0] != "10.0.0.6/24" {
+			t.Fatalf("unexpected address lookup calls: %#v", fakeNetBox.findByAddressCalls)
+		}
+		if len(fakeNetBox.deleteCalls) != 1 || fakeNetBox.deleteCalls[0] != 51 {
 			t.Fatalf("unexpected delete calls: %#v", fakeNetBox.deleteCalls)
 		}
 	})
@@ -283,18 +369,21 @@ func TestReleaseAddress(t *testing.T) {
 }
 
 type fakeNetBoxClient struct {
-	resolvedPrefixIDs []int32
-	resolveErr        error
-	ensureFieldName   string
-	ensureErr         error
-	allocations       map[int32]fakeAllocationResult
-	allocateCalls     []int32
-	lastRequest       *nb.AllocationRequest
-	findResult        *nb.AllocatedAddress
-	findErr           error
-	findArgs          []string
-	deleteCalls       []int32
-	deleteErr         error
+	resolvedPrefixIDs   []int32
+	resolveErr          error
+	ensureFieldName     string
+	ensureErr           error
+	allocations         map[int32]fakeAllocationResult
+	allocateCalls       []int32
+	lastRequest         *nb.AllocationRequest
+	findResult          *nb.AllocatedAddress
+	findErr             error
+	findArgs            []string
+	findByAddressResult *nb.AllocatedAddress
+	findByAddressErr    error
+	findByAddressCalls  []string
+	deleteCalls         []int32
+	deleteErr           error
 }
 
 type fakeAllocationResult struct {
@@ -324,6 +413,11 @@ func (f *fakeNetBoxClient) AllocateIPAddress(_ context.Context, prefixID int32, 
 func (f *fakeNetBoxClient) FindIPAddressByClaimUID(_ context.Context, ownershipTag, fieldName, claimUID string) (*nb.AllocatedAddress, error) {
 	f.findArgs = []string{ownershipTag, fieldName, claimUID}
 	return f.findResult, f.findErr
+}
+
+func (f *fakeNetBoxClient) FindIPAddressByAddress(_ context.Context, _ string, address string) (*nb.AllocatedAddress, error) {
+	f.findByAddressCalls = append(f.findByAddressCalls, address)
+	return f.findByAddressResult, f.findByAddressErr
 }
 
 func (f *fakeNetBoxClient) DeleteIPAddress(_ context.Context, id int32) error {

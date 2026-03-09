@@ -17,13 +17,18 @@ limitations under the License.
 package netbox
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
-
-	netboxv4 "github.com/netbox-community/go-netbox/v4"
+	"unicode"
 
 	ipamv1alpha1 "github.com/evenh/cluster-api-ipam-provider-netbox/api/v1alpha1"
 )
@@ -33,6 +38,7 @@ type Client interface {
 	EnsureIPAddressCustomField(ctx context.Context, fieldName string) error
 	AllocateIPAddress(ctx context.Context, prefixID int32, request AllocationRequest) (*AllocatedAddress, error)
 	FindIPAddressByClaimUID(ctx context.Context, ownershipTag, fieldName, claimUID string) (*AllocatedAddress, error)
+	FindIPAddressByAddress(ctx context.Context, ownershipTag, address string) (*AllocatedAddress, error)
 	DeleteIPAddress(ctx context.Context, id int32) error
 }
 
@@ -53,7 +59,58 @@ type AllocatedAddress struct {
 }
 
 type APIClient struct {
-	client *netboxv4.APIClient
+	baseURL    string
+	token      string
+	httpClient *http.Client
+}
+
+const UserAgent = "cluster-api-ipam-provider-netbox/dev"
+
+type netBoxListResponse[T any] struct {
+	Count   int `json:"count"`
+	Results []T `json:"results"`
+}
+
+type netBoxTag struct {
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+type netBoxPrefix struct {
+	ID     int32  `json:"id"`
+	Prefix string `json:"prefix"`
+}
+
+type netBoxIPAddress struct {
+	ID           int32                  `json:"id"`
+	Address      string                 `json:"address"`
+	DNSName      string                 `json:"dns_name"`
+	Status       *netBoxStatus          `json:"status,omitempty"`
+	Tags         []netBoxTag            `json:"tags,omitempty"`
+	CustomFields map[string]interface{} `json:"custom_fields,omitempty"`
+}
+
+type netBoxStatus struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+type netBoxCustomField struct {
+	Name string `json:"name"`
+}
+
+type apiError struct {
+	statusCode int
+	status     string
+	body       string
+}
+
+func (e *apiError) Error() string {
+	body := strings.TrimSpace(e.body)
+	if body == "" {
+		return e.status
+	}
+	return fmt.Sprintf("%s: %s", e.status, body)
 }
 
 func NewClient(cfg ConnectionConfig) (Client, error) {
@@ -61,18 +118,15 @@ func NewClient(cfg ConnectionConfig) (Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	scheme, host, err := SplitBaseURL(cfg.BaseURL)
-	if err != nil {
+	if _, _, err := SplitBaseURL(cfg.BaseURL); err != nil {
 		return nil, err
 	}
 
-	apiCfg := netboxv4.NewConfiguration()
-	apiCfg.Scheme = scheme
-	apiCfg.Host = host
-	apiCfg.DefaultHeader["Authorization"] = fmt.Sprintf("Token %s", cfg.Token)
-	apiCfg.HTTPClient = httpClient
-
-	return &APIClient{client: netboxv4.NewAPIClient(apiCfg)}, nil
+	return &APIClient{
+		baseURL:    strings.TrimRight(cfg.BaseURL, "/"),
+		token:      cfg.Token,
+		httpClient: httpClient,
+	}, nil
 }
 
 func (c *APIClient) ResolvePrefixIDs(ctx context.Context, refs []ipamv1alpha1.NetBoxPrefixReference) ([]int32, error) {
@@ -82,24 +136,24 @@ func (c *APIClient) ResolvePrefixIDs(ctx context.Context, refs []ipamv1alpha1.Ne
 		case ref.ID != nil:
 			ids = append(ids, *ref.ID)
 		case ref.CIDR != "":
-			req := c.client.IpamAPI.IpamPrefixesList(ctx).Prefix([]string{ref.CIDR})
+			query := url.Values{}
+			query.Set("prefix", ref.CIDR)
 			if ref.VRFID != nil {
-				req = req.VrfId([]*int32{ref.VRFID})
+				query.Set("vrf_id", strconv.FormatInt(int64(*ref.VRFID), 10))
 			}
-			result, resp, err := req.Execute()
-			if err != nil {
+
+			var result netBoxListResponse[netBoxPrefix]
+			if err := c.get(ctx, "/api/ipam/prefixes/", query, &result); err != nil {
 				return nil, fmt.Errorf("list prefixes for %q: %w", ref.CIDR, err)
 			}
-			if resp != nil && resp.Body != nil {
-				_ = resp.Body.Close()
-			}
-			if result == nil || result.Count == 0 {
+			switch len(result.Results) {
+			case 0:
 				return nil, fmt.Errorf("no NetBox prefix matches %q", ref.CIDR)
-			}
-			if result.Count != 1 {
+			case 1:
+				ids = append(ids, result.Results[0].ID)
+			default:
 				return nil, fmt.Errorf("prefix reference %q is ambiguous", ref.CIDR)
 			}
-			ids = append(ids, result.Results[0].Id)
 		default:
 			return nil, fmt.Errorf("prefix reference must include id or cidr")
 		}
@@ -108,28 +162,24 @@ func (c *APIClient) ResolvePrefixIDs(ctx context.Context, refs []ipamv1alpha1.Ne
 }
 
 func (c *APIClient) EnsureIPAddressCustomField(ctx context.Context, fieldName string) error {
-	result, resp, err := c.client.ExtrasAPI.ExtrasCustomFieldsList(ctx).
-		Name([]string{fieldName}).
-		ObjectType("ipam.ipaddress").
-		Execute()
-	if err != nil {
+	query := url.Values{}
+	query.Set("name", fieldName)
+	query.Set("object_type", "ipam.ipaddress")
+
+	var result netBoxListResponse[netBoxCustomField]
+	if err := c.get(ctx, "/api/extras/custom-fields/", query, &result); err != nil {
 		return fmt.Errorf("list custom fields: %w", err)
 	}
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
-	}
-	if result == nil || result.Count == 0 {
+	if len(result.Results) == 0 {
 		return fmt.Errorf("NetBox custom field %q for ipam.ipaddress does not exist", fieldName)
 	}
 	return nil
 }
 
 func (c *APIClient) AllocateIPAddress(ctx context.Context, prefixID int32, req AllocationRequest) (*AllocatedAddress, error) {
-	request := netboxv4.NewIPAddressRequestWithDefaults()
-	request.SetStatus(netboxv4.IPAddressStatusValue(req.Status))
-	request.SetDescription(req.Description)
-	if req.Metadata.DNSName != "" {
-		request.SetDnsName(req.Metadata.DNSName)
+	tags, err := c.ensureTags(ctx, appendUnique(req.Metadata.Tags, req.OwnershipTag))
+	if err != nil {
+		return nil, fmt.Errorf("ensure tags: %w", err)
 	}
 
 	customFields := make(map[string]interface{}, len(req.Metadata.CustomFields)+1)
@@ -137,81 +187,87 @@ func (c *APIClient) AllocateIPAddress(ctx context.Context, prefixID int32, req A
 		customFields[k] = v
 	}
 	customFields[req.ClaimUIDFieldName] = req.ClaimUID
-	request.CustomFields = customFields
-	request.Tags = toNestedTags(appendUnique(req.Metadata.Tags, req.OwnershipTag))
 
+	payload := map[string]interface{}{
+		"status":        req.Status,
+		"description":   req.Description,
+		"custom_fields": customFields,
+		"tags":          tags,
+	}
+	if req.Metadata.DNSName != "" {
+		payload["dns_name"] = req.Metadata.DNSName
+	}
 	if req.Metadata.TenantID != nil {
-		request.SetTenant(netboxv4.Int32AsASNRangeRequestTenant(req.Metadata.TenantID))
+		payload["tenant"] = *req.Metadata.TenantID
 	}
 	if req.Metadata.VRFID != nil {
-		request.SetVrf(netboxv4.Int32AsIPAddressRequestVrf(req.Metadata.VRFID))
+		payload["vrf"] = *req.Metadata.VRFID
 	}
 
-	created, resp, err := c.client.IpamAPI.IpamPrefixesAvailableIpsCreate(ctx, prefixID).
-		IPAddressRequest([]netboxv4.IPAddressRequest{*request}).
-		Execute()
-	if err != nil {
+	var created []netBoxIPAddress
+	if err := c.post(ctx, fmt.Sprintf("/api/ipam/prefixes/%d/available-ips/", prefixID), []map[string]interface{}{payload}, &created, http.StatusOK, http.StatusCreated); err != nil {
+		if isNoAvailableIPError(err) {
+			return nil, ErrNoAvailableIP
+		}
 		return nil, fmt.Errorf("allocate available ip from prefix %d: %w", prefixID, err)
-	}
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
 	}
 	if len(created) == 0 {
 		return nil, ErrNoAvailableIP
 	}
 
-	return mapIPAddress(&created[0]), nil
+	return mapIPAddress(created[0]), nil
 }
 
 func (c *APIClient) FindIPAddressByClaimUID(ctx context.Context, ownershipTag, fieldName, claimUID string) (*AllocatedAddress, error) {
-	req := c.client.IpamAPI.IpamIpAddressesList(ctx)
-	req = req.Tag([]string{ownershipTag})
-	result, resp, err := req.Execute()
-	if err != nil {
+	query := url.Values{}
+	query.Set("tag", ownershipTag)
+
+	var result netBoxListResponse[netBoxIPAddress]
+	if err := c.get(ctx, "/api/ipam/ip-addresses/", query, &result); err != nil {
 		return nil, fmt.Errorf("list IP addresses: %w", err)
 	}
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
+	for _, item := range result.Results {
+		if fmt.Sprint(item.CustomFields[fieldName]) == claimUID {
+			return mapIPAddress(item), nil
+		}
 	}
-	if result == nil {
-		return nil, nil
+	return nil, nil
+}
+
+func (c *APIClient) FindIPAddressByAddress(ctx context.Context, ownershipTag, address string) (*AllocatedAddress, error) {
+	query := url.Values{}
+	query.Set("tag", ownershipTag)
+	query.Set("address", address)
+
+	var result netBoxListResponse[netBoxIPAddress]
+	if err := c.get(ctx, "/api/ipam/ip-addresses/", query, &result); err != nil {
+		return nil, fmt.Errorf("list IP addresses by address: %w", err)
 	}
 	for _, item := range result.Results {
-		if item.CustomFields == nil {
-			continue
-		}
-		raw, ok := item.CustomFields[fieldName]
-		if !ok {
-			continue
-		}
-		if fmt.Sprint(raw) == claimUID {
-			address := mapIPAddress(&item)
-			return address, nil
+		mapped := mapIPAddress(item)
+		if strings.TrimSpace(item.Address) == address || strings.TrimSpace(mapped.Address) == address {
+			return mapped, nil
 		}
 	}
 	return nil, nil
 }
 
 func (c *APIClient) DeleteIPAddress(ctx context.Context, id int32) error {
-	resp, err := c.client.IpamAPI.IpamIpAddressesDestroy(ctx, id).Execute()
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
-	}
+	err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/api/ipam/ip-addresses/%d/", id), nil, nil, nil, http.StatusNoContent, http.StatusNotFound)
 	if err == nil {
 		return nil
 	}
-	if resp != nil && resp.StatusCode == http.StatusNotFound {
+	var apiErr *apiError
+	if errors.As(err, &apiErr) && apiErr.statusCode == http.StatusNotFound {
 		return nil
 	}
 	return fmt.Errorf("delete ip address %d: %w", id, err)
 }
 
 var ErrNoAvailableIP = errors.New("no available IP")
+var nonSlugCharacters = regexp.MustCompile(`[^a-z0-9_-]+`)
 
-func mapIPAddress(ip *netboxv4.IPAddress) *AllocatedAddress {
-	if ip == nil {
-		return nil
-	}
+func mapIPAddress(ip netBoxIPAddress) *AllocatedAddress {
 	address := strings.TrimSpace(ip.Address)
 	prefix := int32(0)
 	if parts := strings.SplitN(address, "/", 2); len(parts) == 2 {
@@ -220,15 +276,12 @@ func mapIPAddress(ip *netboxv4.IPAddress) *AllocatedAddress {
 			prefix = parsedPrefix
 		}
 	}
-	allocated := &AllocatedAddress{
-		ID:      ip.Id,
+	return &AllocatedAddress{
+		ID:      ip.ID,
 		Address: address,
 		Prefix:  prefix,
+		DNSName: ip.DNSName,
 	}
-	if ip.DnsName != nil {
-		allocated.DNSName = *ip.DnsName
-	}
-	return allocated
 }
 
 func appendUnique(values []string, extras ...string) []string {
@@ -248,10 +301,177 @@ func appendUnique(values []string, extras ...string) []string {
 	return out
 }
 
-func toNestedTags(tags []string) []netboxv4.NestedTagRequest {
-	out := make([]netboxv4.NestedTagRequest, 0, len(tags))
+func (c *APIClient) ensureTags(ctx context.Context, names []string) ([]netBoxTag, error) {
+	out := make([]netBoxTag, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+
+		tag, err := c.ensureTag(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, tag)
+	}
+	return out, nil
+}
+
+func (c *APIClient) ensureTag(ctx context.Context, name string) (netBoxTag, error) {
+	query := url.Values{}
+	query.Set("name", name)
+
+	var result netBoxListResponse[netBoxTag]
+	if err := c.get(ctx, "/api/extras/tags/", query, &result); err != nil {
+		return netBoxTag{}, fmt.Errorf("list tag %q: %w", name, err)
+	}
+	for _, item := range result.Results {
+		if item.Name == name {
+			return item, nil
+		}
+	}
+
+	request := netBoxTag{
+		Name: name,
+		Slug: slugifyTag(name),
+	}
+	var created netBoxTag
+	if err := c.post(ctx, "/api/extras/tags/", request, &created, http.StatusCreated); err != nil {
+		return netBoxTag{}, fmt.Errorf("create tag %q: %w", name, err)
+	}
+	if created.Name == "" {
+		return netBoxTag{}, fmt.Errorf("create tag %q: empty response", name)
+	}
+	return created, nil
+}
+
+func toNestedTags(tags []string) []netBoxTag {
+	out := make([]netBoxTag, 0, len(tags))
 	for _, tag := range tags {
-		out = append(out, netboxv4.NestedTagRequest{Name: tag})
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		out = append(out, netBoxTag{Name: tag, Slug: slugifyTag(tag)})
 	}
 	return out
+}
+
+func slugifyTag(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return "tag"
+	}
+
+	var b strings.Builder
+	b.Grow(len(value))
+	lastHyphen := false
+	for _, r := range value {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+			lastHyphen = false
+		case r == '_' || r == '-':
+			if !lastHyphen && b.Len() > 0 {
+				b.WriteRune(r)
+				lastHyphen = true
+			}
+		default:
+			if !lastHyphen && b.Len() > 0 {
+				b.WriteByte('-')
+				lastHyphen = true
+			}
+		}
+	}
+
+	slug := strings.Trim(b.String(), "-_")
+	slug = nonSlugCharacters.ReplaceAllString(slug, "-")
+	slug = strings.Trim(slug, "-_")
+	if slug == "" {
+		return "tag"
+	}
+	return slug
+}
+
+func isNoAvailableIPError(err error) bool {
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.statusCode != http.StatusBadRequest && apiErr.statusCode != http.StatusConflict {
+		return false
+	}
+
+	body := strings.ToLower(apiErr.body)
+	return strings.Contains(body, "available ip") || strings.Contains(body, "available addresses")
+}
+
+func (c *APIClient) get(ctx context.Context, path string, query url.Values, response interface{}) error {
+	return c.do(ctx, http.MethodGet, path, query, nil, response, http.StatusOK)
+}
+
+func (c *APIClient) post(ctx context.Context, path string, request interface{}, response interface{}, expectedStatus ...int) error {
+	return c.do(ctx, http.MethodPost, path, nil, request, response, expectedStatus...)
+}
+
+func (c *APIClient) do(ctx context.Context, method, path string, query url.Values, request interface{}, response interface{}, expectedStatus ...int) error {
+	var body io.Reader
+	if request != nil {
+		payload, err := json.Marshal(request)
+		if err != nil {
+			return fmt.Errorf("marshal %s %s request: %w", method, path, err)
+		}
+		body = bytes.NewReader(payload)
+	}
+
+	endpoint := c.baseURL + path
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err != nil {
+		return fmt.Errorf("build %s %s request: %w", method, path, err)
+	}
+	httpReq.Header.Set("Authorization", "Token "+c.token)
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("User-Agent", UserAgent)
+	if request != nil {
+		httpReq.Header.Set("Content-Type", "application/json")
+	}
+
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer httpResp.Body.Close()
+
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return fmt.Errorf("read %s %s response: %w", method, path, err)
+	}
+	if !containsStatus(expectedStatus, httpResp.StatusCode) {
+		return &apiError{
+			statusCode: httpResp.StatusCode,
+			status:     httpResp.Status,
+			body:       string(respBody),
+		}
+	}
+	if response == nil || len(respBody) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(respBody, response); err != nil {
+		return fmt.Errorf("decode %s %s response: %w", method, path, err)
+	}
+	return nil
+}
+
+func containsStatus(statuses []int, status int) bool {
+	for _, candidate := range statuses {
+		if candidate == status {
+			return true
+		}
+	}
+	return false
 }

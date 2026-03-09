@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
@@ -116,6 +117,10 @@ func (h *netboxClaimHandler) FetchPool(ctx context.Context) (client.Object, *ctr
 }
 
 func (h *netboxClaimHandler) EnsureAddress(ctx context.Context, address *ipamv1.IPAddress) (*ctrl.Result, error) {
+	if address.Spec.Address != "" {
+		return nil, nil
+	}
+
 	poolSpec := h.pool.PoolSpec()
 	cfg, err := nb.LoadConnectionConfig(ctx, h.Client, h.pool.GetNamespace(), poolSpec.ConnectionSecretRef)
 	if err != nil {
@@ -171,6 +176,14 @@ func (h *netboxClaimHandler) ReleaseAddress(ctx context.Context) (*ctrl.Result, 
 		return nil, nil
 	}
 
+	k8sIPAddress := &ipamv1.IPAddress{}
+	key := types.NamespacedName{Namespace: h.claim.Namespace, Name: h.claim.Name}
+	if err := h.Get(ctx, key, k8sIPAddress); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+	}
+
 	poolSpec := h.pool.PoolSpec()
 	cfg, err := nb.LoadConnectionConfig(ctx, h.Client, h.pool.GetNamespace(), poolSpec.ConnectionSecretRef)
 	if err != nil {
@@ -185,8 +198,41 @@ func (h *netboxClaimHandler) ReleaseAddress(ctx context.Context) (*ctrl.Result, 
 	if err != nil {
 		return nil, err
 	}
+	if ipAddress == nil && k8sIPAddress.Name != "" {
+		for _, candidate := range netboxAddressCandidates(k8sIPAddress) {
+			ipAddress, err = netboxClient.FindIPAddressByAddress(ctx, nb.OwnershipTag(poolSpec), candidate)
+			if err != nil {
+				return nil, err
+			}
+			if ipAddress != nil {
+				break
+			}
+		}
+	}
 	if ipAddress == nil {
+		if k8sIPAddress.Name != "" {
+			return &ctrl.Result{RequeueAfter: 5 * time.Second}, fmt.Errorf(
+				"unable to locate NetBox IP for claim %s/%s with uid %s and address candidates %v",
+				h.claim.Namespace,
+				h.claim.Name,
+				h.claim.GetUID(),
+				netboxAddressCandidates(k8sIPAddress),
+			)
+		}
 		return nil, nil
 	}
 	return nil, netboxClient.DeleteIPAddress(ctx, ipAddress.ID)
+}
+
+func netboxAddressCandidates(address *ipamv1.IPAddress) []string {
+	if address == nil || address.Spec.Address == "" {
+		return nil
+	}
+
+	candidates := []string{}
+	if address.Spec.Prefix != nil {
+		candidates = append(candidates, fmt.Sprintf("%s/%d", address.Spec.Address, *address.Spec.Prefix))
+	}
+	candidates = append(candidates, address.Spec.Address)
+	return candidates
 }
