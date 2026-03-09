@@ -28,9 +28,10 @@ import (
 	ipamv1alpha1 "github.com/evenh/cluster-api-ipam-provider-netbox/api/v1alpha1"
 )
 
-// NetBoxIPPoolReconciler reconciles a NetBoxIPPool object
+// NetBoxIPPoolReconciler reconciles a NetBoxIPPool object.
 type NetBoxIPPoolReconciler struct {
 	client.Client
+
 	Scheme *runtime.Scheme
 }
 

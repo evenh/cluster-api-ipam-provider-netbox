@@ -18,6 +18,7 @@ package netbox
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 
@@ -47,7 +48,10 @@ type EffectiveMetadata struct {
 	CustomFields map[string]string
 }
 
-func EffectivePoolMetadata(poolDefaults ipamv1alpha1.NetBoxMetadata, claim *ipamv1.IPAddressClaim) (EffectiveMetadata, error) {
+func EffectivePoolMetadata(
+	poolDefaults ipamv1alpha1.NetBoxMetadata,
+	claim *ipamv1.IPAddressClaim,
+) (EffectiveMetadata, error) {
 	metadata := EffectiveMetadata{
 		TenantID: poolDefaults.TenantID,
 		VRFID:    poolDefaults.VRFID,
@@ -56,9 +60,7 @@ func EffectivePoolMetadata(poolDefaults ipamv1alpha1.NetBoxMetadata, claim *ipam
 	}
 	if len(poolDefaults.CustomFields) > 0 {
 		metadata.CustomFields = make(map[string]string, len(poolDefaults.CustomFields))
-		for k, v := range poolDefaults.CustomFields {
-			metadata.CustomFields[k] = v
-		}
+		maps.Copy(metadata.CustomFields, poolDefaults.CustomFields)
 	} else {
 		metadata.CustomFields = map[string]string{}
 	}
@@ -93,9 +95,7 @@ func EffectivePoolMetadata(poolDefaults ipamv1alpha1.NetBoxMetadata, claim *ipam
 		if err := json.Unmarshal([]byte(raw), &values); err != nil {
 			return EffectiveMetadata{}, fmt.Errorf("parse %s: %w", AnnotationCustomFields, err)
 		}
-		for k, v := range values {
-			metadata.CustomFields[k] = v
-		}
+		maps.Copy(metadata.CustomFields, values)
 	}
 
 	return metadata, nil

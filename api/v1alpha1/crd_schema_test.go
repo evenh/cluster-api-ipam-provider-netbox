@@ -13,29 +13,80 @@ func TestGeneratedCRDsDocumentFieldsAndExposeCELValidation(t *testing.T) {
 	t.Run("namespaced pool schema documents important fields", func(t *testing.T) {
 		crd := loadCRD(t, "ipam.cluster.x-k8s.io_netboxippools.yaml")
 
-		clusterNameDescription := lookupString(t, crd, "spec", "versions", "0", "schema", "openAPIV3Schema", "properties", "spec", "properties", "clusterName", "description")
+		clusterNameDescription := lookupString(
+			t,
+			crd,
+			"spec",
+			"versions",
+			"0",
+			"schema",
+			"openAPIV3Schema",
+			"properties",
+			"spec",
+			"properties",
+			"clusterName",
+			"description",
+		)
 		if !strings.Contains(clusterNameDescription, "clusterctl move") {
 			t.Fatalf("clusterName description = %q, want clusterctl move guidance", clusterNameDescription)
 		}
 
-		prefixesMinItems := lookupInt(t, crd, "spec", "versions", "0", "schema", "openAPIV3Schema", "properties", "spec", "properties", "prefixes", "minItems")
+		prefixesMinItems := lookupInt(
+			t,
+			crd,
+			"spec",
+			"versions",
+			"0",
+			"schema",
+			"openAPIV3Schema",
+			"properties",
+			"spec",
+			"properties",
+			"prefixes",
+			"minItems",
+		)
 		if prefixesMinItems != 1 {
 			t.Fatalf("prefixes.minItems = %d, want 1", prefixesMinItems)
 		}
 
-		validations := lookupSlice(t, crd, "spec", "versions", "0", "schema", "openAPIV3Schema", "properties", "spec", "properties", "prefixes", "items", "x-kubernetes-validations")
+		validations := lookupSlice(
+			t,
+			crd,
+			"spec",
+			"versions",
+			"0",
+			"schema",
+			"openAPIV3Schema",
+			"properties",
+			"spec",
+			"properties",
+			"prefixes",
+			"items",
+			"x-kubernetes-validations",
+		)
 		assertValidationRule(t, validations, "has(self.id) != has(self.cidr)")
 		assertValidationRule(t, validations, "!has(self.vrfID) || has(self.cidr)")
 	})
 
 	t.Run("global pool schema requires a secret namespace", func(t *testing.T) {
 		crd := loadCRD(t, "ipam.cluster.x-k8s.io_globalnetboxippools.yaml")
-		validations := lookupSlice(t, crd, "spec", "versions", "0", "schema", "openAPIV3Schema", "properties", "spec", "x-kubernetes-validations")
+		validations := lookupSlice(
+			t,
+			crd,
+			"spec",
+			"versions",
+			"0",
+			"schema",
+			"openAPIV3Schema",
+			"properties",
+			"spec",
+			"x-kubernetes-validations",
+		)
 		assertValidationRule(t, validations, "size(self.connectionSecretRef.namespace) > 0")
 	})
 }
 
-func loadCRD(t *testing.T, filename string) map[string]interface{} {
+func loadCRD(t *testing.T, filename string) map[string]any {
 	t.Helper()
 
 	path := filepath.Join("..", "..", "config", "crd", "bases", filename)
@@ -44,14 +95,14 @@ func loadCRD(t *testing.T, filename string) map[string]interface{} {
 		t.Fatalf("read %s: %v", path, err)
 	}
 
-	var out map[string]interface{}
-	if err := yaml.Unmarshal(data, &out); err != nil {
-		t.Fatalf("unmarshal %s: %v", path, err)
+	var out map[string]any
+	if unmarshalErr := yaml.Unmarshal(data, &out); unmarshalErr != nil {
+		t.Fatalf("unmarshal %s: %v", path, unmarshalErr)
 	}
 	return out
 }
 
-func lookupString(t *testing.T, value interface{}, path ...string) string {
+func lookupString(t *testing.T, value any, path ...string) string {
 	t.Helper()
 	raw := lookupValue(t, value, path...)
 	str, ok := raw.(string)
@@ -61,7 +112,7 @@ func lookupString(t *testing.T, value interface{}, path ...string) string {
 	return str
 }
 
-func lookupInt(t *testing.T, value interface{}, path ...string) int {
+func lookupInt(t *testing.T, value any, path ...string) int {
 	t.Helper()
 	raw := lookupValue(t, value, path...)
 	switch v := raw.(type) {
@@ -77,28 +128,28 @@ func lookupInt(t *testing.T, value interface{}, path ...string) int {
 	}
 }
 
-func lookupSlice(t *testing.T, value interface{}, path ...string) []interface{} {
+func lookupSlice(t *testing.T, value any, path ...string) []any {
 	t.Helper()
 	raw := lookupValue(t, value, path...)
-	slice, ok := raw.([]interface{})
+	slice, ok := raw.([]any)
 	if !ok {
 		t.Fatalf("path %v = %#v, want slice", path, raw)
 	}
 	return slice
 }
 
-func lookupValue(t *testing.T, value interface{}, path ...string) interface{} {
+func lookupValue(t *testing.T, value any, path ...string) any {
 	t.Helper()
 	current := value
 	for _, segment := range path {
 		switch node := current.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			var ok bool
 			current, ok = node[segment]
 			if !ok {
 				t.Fatalf("path %v missing segment %q", path, segment)
 			}
-		case []interface{}:
+		case []any:
 			index, ok := tryIndex(segment)
 			if !ok {
 				t.Fatalf("path %v segment %q is not a valid slice index", path, segment)
@@ -123,10 +174,10 @@ func tryIndex(segment string) (int, bool) {
 	}
 }
 
-func assertValidationRule(t *testing.T, validations []interface{}, wantRule string) {
+func assertValidationRule(t *testing.T, validations []any, wantRule string) {
 	t.Helper()
 	for _, item := range validations {
-		entry, ok := item.(map[string]interface{})
+		entry, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}

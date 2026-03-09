@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -37,6 +38,7 @@ const (
 	SecretKeyToken              = "token"
 	SecretKeyInsecureSkipVerify = "insecureSkipVerify"
 	SecretKeyCABundle           = "caBundle"
+	httpClientTimeout           = 30 * time.Second
 )
 
 type ConnectionConfig struct {
@@ -46,7 +48,12 @@ type ConnectionConfig struct {
 	CABundle           []byte
 }
 
-func LoadConnectionConfig(ctx context.Context, c client.Client, namespace string, ref ipamv1alpha1.NamespacedSecretReference) (ConnectionConfig, error) {
+func LoadConnectionConfig(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	ref ipamv1alpha1.NamespacedSecretReference,
+) (ConnectionConfig, error) {
 	secretNamespace := ref.Namespace
 	if secretNamespace == "" {
 		secretNamespace = namespace
@@ -62,10 +69,20 @@ func LoadConnectionConfig(ctx context.Context, c client.Client, namespace string
 		Token:   string(secret.Data[SecretKeyToken]),
 	}
 	if cfg.BaseURL == "" {
-		return ConnectionConfig{}, fmt.Errorf("connection secret %s/%s is missing %q", secretNamespace, ref.Name, SecretKeyURL)
+		return ConnectionConfig{}, fmt.Errorf(
+			"connection secret %s/%s is missing %q",
+			secretNamespace,
+			ref.Name,
+			SecretKeyURL,
+		)
 	}
 	if cfg.Token == "" {
-		return ConnectionConfig{}, fmt.Errorf("connection secret %s/%s is missing %q", secretNamespace, ref.Name, SecretKeyToken)
+		return ConnectionConfig{}, fmt.Errorf(
+			"connection secret %s/%s is missing %q",
+			secretNamespace,
+			ref.Name,
+			SecretKeyToken,
+		)
 	}
 
 	if raw, ok := secret.Data[SecretKeyInsecureSkipVerify]; ok && len(raw) > 0 {
@@ -82,24 +99,25 @@ func LoadConnectionConfig(ctx context.Context, c client.Client, namespace string
 func NewHTTPClient(cfg ConnectionConfig) (*http.Client, error) {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
+			//nolint:gosec // The secret explicitly controls whether certificate verification is skipped.
 			InsecureSkipVerify: cfg.InsecureSkipVerify,
 		},
 	}
 	if len(cfg.CABundle) > 0 {
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(cfg.CABundle) {
-			return nil, fmt.Errorf("parse CA bundle")
+			return nil, errors.New("parse CA bundle")
 		}
 		transport.TLSClientConfig.RootCAs = pool
 	}
 
 	return &http.Client{
 		Transport: transport,
-		Timeout:   30 * time.Second,
+		Timeout:   httpClientTimeout,
 	}, nil
 }
 
-func SplitBaseURL(rawURL string) (scheme string, host string, err error) {
+func SplitBaseURL(rawURL string) (string, string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return "", "", fmt.Errorf("parse url: %w", err)

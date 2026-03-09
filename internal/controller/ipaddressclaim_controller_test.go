@@ -134,7 +134,12 @@ func TestEnsureAddress(t *testing.T) {
 			resolvedPrefixIDs: []int32{100, 200},
 			allocations: map[int32]fakeAllocationResult{
 				100: {
-					address: &nb.AllocatedAddress{ID: 42, Address: "10.0.0.5", Prefix: 24, DNSName: "claim.example.com"},
+					address: &nb.AllocatedAddress{
+						ID:      42,
+						Address: "10.0.0.5",
+						Prefix:  24,
+						DNSName: "claim.example.com",
+					},
 				},
 			},
 		}
@@ -174,7 +179,8 @@ func TestEnsureAddress(t *testing.T) {
 		if len(fakeNetBox.lastRequest.Metadata.Tags) != 1 || fakeNetBox.lastRequest.Metadata.Tags[0] != "claim-tag" {
 			t.Fatalf("unexpected tags: %#v", fakeNetBox.lastRequest.Metadata.Tags)
 		}
-		if fakeNetBox.lastRequest.Metadata.CustomFields["source"] != "pool" || fakeNetBox.lastRequest.Metadata.CustomFields["owner"] != "claim" {
+		if fakeNetBox.lastRequest.Metadata.CustomFields["source"] != "pool" ||
+			fakeNetBox.lastRequest.Metadata.CustomFields["owner"] != "claim" {
 			t.Fatalf("unexpected custom fields: %#v", fakeNetBox.lastRequest.Metadata.CustomFields)
 		}
 		if fakeNetBox.lastRequest.ClaimUID != "claim-uid" {
@@ -295,7 +301,10 @@ func TestReleaseAddress(t *testing.T) {
 				Prefix:  int32Ptr(24),
 			},
 		}
-		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy(), address).Build()
+		k8sClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(secret.DeepCopy(), pool.DeepCopy(), address).
+			Build()
 		handler := &netboxClaimHandler{
 			Client: k8sClient,
 			claim:  claim.DeepCopy(),
@@ -325,7 +334,10 @@ func TestReleaseAddress(t *testing.T) {
 				Prefix:  int32Ptr(24),
 			},
 		}
-		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy(), address).Build()
+		k8sClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(secret.DeepCopy(), pool.DeepCopy(), address).
+			Build()
 		handler := &netboxClaimHandler{
 			Client: k8sClient,
 			claim:  claim.DeepCopy(),
@@ -391,7 +403,10 @@ type fakeAllocationResult struct {
 	err     error
 }
 
-func (f *fakeNetBoxClient) ResolvePrefixIDs(_ context.Context, _ []ipamv1alpha1.NetBoxPrefixReference) ([]int32, error) {
+func (f *fakeNetBoxClient) ResolvePrefixIDs(
+	_ context.Context,
+	_ []ipamv1alpha1.NetBoxPrefixReference,
+) ([]int32, error) {
 	return f.resolvedPrefixIDs, f.resolveErr
 }
 
@@ -400,7 +415,11 @@ func (f *fakeNetBoxClient) EnsureIPAddressCustomField(_ context.Context, fieldNa
 	return f.ensureErr
 }
 
-func (f *fakeNetBoxClient) AllocateIPAddress(_ context.Context, prefixID int32, req nb.AllocationRequest) (*nb.AllocatedAddress, error) {
+func (f *fakeNetBoxClient) AllocateIPAddress(
+	_ context.Context,
+	prefixID int32,
+	req nb.AllocationRequest,
+) (*nb.AllocatedAddress, error) {
 	f.allocateCalls = append(f.allocateCalls, prefixID)
 	f.lastRequest = &req
 	result, ok := f.allocations[prefixID]
@@ -410,12 +429,19 @@ func (f *fakeNetBoxClient) AllocateIPAddress(_ context.Context, prefixID int32, 
 	return result.address, result.err
 }
 
-func (f *fakeNetBoxClient) FindIPAddressByClaimUID(_ context.Context, ownershipTag, fieldName, claimUID string) (*nb.AllocatedAddress, error) {
+func (f *fakeNetBoxClient) FindIPAddressByClaimUID(
+	_ context.Context,
+	ownershipTag, fieldName, claimUID string,
+) (*nb.AllocatedAddress, error) {
 	f.findArgs = []string{ownershipTag, fieldName, claimUID}
 	return f.findResult, f.findErr
 }
 
-func (f *fakeNetBoxClient) FindIPAddressByAddress(_ context.Context, _ string, address string) (*nb.AllocatedAddress, error) {
+func (f *fakeNetBoxClient) FindIPAddressByAddress(
+	_ context.Context,
+	_ string,
+	address string,
+) (*nb.AllocatedAddress, error) {
 	f.findByAddressCalls = append(f.findByAddressCalls, address)
 	return f.findByAddressResult, f.findByAddressErr
 }
@@ -442,7 +468,7 @@ func newControllerTestScheme(t *testing.T) *runtime.Scheme {
 }
 
 func int32Ptr(v int32) *int32 {
-	return &v
+	return new(v)
 }
 
 var _ nb.Client = (*fakeNetBoxClient)(nil)

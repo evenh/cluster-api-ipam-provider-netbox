@@ -18,6 +18,7 @@ package ipamutil
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"time"
 
@@ -44,12 +45,15 @@ import (
 )
 
 const (
-	ReleaseAddressFinalizer = "ipam.cluster.x-k8s.io/ReleaseAddress"
-	ProtectAddressFinalizer = "ipam.cluster.x-k8s.io/ProtectAddress"
+	ReleaseAddressFinalizer  = "ipam.cluster.x-k8s.io/ReleaseAddress"
+	ProtectAddressFinalizer  = "ipam.cluster.x-k8s.io/ProtectAddress"
+	addressCachePollInterval = 5 * time.Millisecond
+	addressCachePollTimeout  = 5 * time.Second
 )
 
 type ClaimReconciler struct {
 	client.Client
+
 	Scheme *runtime.Scheme
 
 	WatchFilterValue string
@@ -69,9 +73,10 @@ type ClaimHandler interface {
 
 func (r *ClaimReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
 	if r.Adapter == nil {
-		return fmt.Errorf("adapter is nil")
+		return stderrors.New("adapter is nil")
 	}
-	if err := mgr.GetFieldIndexer().IndexField(ctx, &ipamv1.IPAddressClaim{}, "clusterName", indexClusterName); err != nil {
+	if err := mgr.GetFieldIndexer().
+		IndexField(ctx, &ipamv1.IPAddressClaim{}, "clusterName", indexClusterName); err != nil {
 		return fmt.Errorf("register IPAddressClaim clusterName index: %w", err)
 	}
 
@@ -82,16 +87,28 @@ func (r *ClaimReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager
 			ctrlhandler.EnqueueRequestsFromMapFunc(r.clusterToIPClaims),
 			builder.WithPredicates(predicate.Funcs{
 				UpdateFunc: func(e event.UpdateEvent) bool {
-					oldCluster := e.ObjectOld.(*clusterv1.Cluster)
-					newCluster := e.ObjectNew.(*clusterv1.Cluster)
+					oldCluster, ok := e.ObjectOld.(*clusterv1.Cluster)
+					if !ok {
+						return false
+					}
+					newCluster, ok := e.ObjectNew.(*clusterv1.Cluster)
+					if !ok {
+						return false
+					}
 					return annotations.IsPaused(oldCluster, oldCluster) && !annotations.IsPaused(newCluster, newCluster)
 				},
 				CreateFunc: func(e event.CreateEvent) bool {
-					cluster := e.Object.(*clusterv1.Cluster)
+					cluster, ok := e.Object.(*clusterv1.Cluster)
+					if !ok {
+						return false
+					}
 					return !annotations.IsPaused(cluster, cluster)
 				},
 				DeleteFunc: func(e event.DeleteEvent) bool {
-					cluster := e.Object.(*clusterv1.Cluster)
+					cluster, ok := e.Object.(*clusterv1.Cluster)
+					if !ok {
+						return false
+					}
 					return !annotations.IsPaused(cluster, cluster)
 				},
 			}),
@@ -114,13 +131,7 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ct
 		return ctrl.Result{}, err
 	}
 
-	var cluster *clusterv1.Cluster
-	var err error
-	if claim.Spec.ClusterName != "" {
-		cluster, err = clusterutil.GetClusterByName(ctx, r.Client, claim.Namespace, claim.Spec.ClusterName)
-	} else if _, ok := claim.GetLabels()[clusterv1.ClusterNameLabel]; ok {
-		cluster, err = clusterutil.GetClusterFromMetadata(ctx, r.Client, claim.ObjectMeta)
-	}
+	cluster, _, err := r.getLinkedCluster(ctx, claim)
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			log.Error(err, "error fetching cluster linked to IPAddressClaim")
@@ -141,8 +152,8 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ct
 		return ctrl.Result{}, err
 	}
 	defer func() {
-		if err := patchHelper.Patch(ctx, claim); err != nil {
-			reterr = kerrors.NewAggregate([]error{reterr, err})
+		if patchErr := patchHelper.Patch(ctx, claim); patchErr != nil {
+			reterr = kerrors.NewAggregate([]error{reterr, patchErr})
 		}
 	}()
 
@@ -150,6 +161,14 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ct
 		return ctrl.Result{}, nil
 	}
 
+	return r.reconcileClaimAddress(ctx, claim)
+}
+
+func (r *ClaimReconciler) reconcileClaimAddress(
+	ctx context.Context,
+	claim *ipamv1.IPAddressClaim,
+) (ctrl.Result, error) {
+	logger := ctrl.LoggerFrom(ctx)
 	handler := r.Adapter.ClaimHandlerFor(r.Client, claim)
 	pool, res, err := handler.FetchPool(ctx)
 	if err != nil || res != nil {
@@ -162,10 +181,16 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ct
 		return unwrapResult(res), errors.Wrap(err, "fetch pool")
 	}
 	if pool == nil {
-		return ctrl.Result{}, errors.New("pool is nil")
+		return ctrl.Result{}, stderrors.New("pool is nil")
 	}
 	if annotations.HasPaused(pool) {
-		log.Info("IPAddressClaim references a paused Pool, skipping reconciliation", "IPAddressClaim", claim.GetName(), "Pool", pool.GetName())
+		logger.Info(
+			"IPAddressClaim references a paused Pool, skipping reconciliation",
+			"IPAddressClaim",
+			claim.GetName(),
+			"Pool",
+			pool.GetName(),
+		)
 		return ctrl.Result{}, nil
 	}
 	if !claim.DeletionTimestamp.IsZero() {
@@ -177,8 +202,8 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ct
 		if res, err = handler.EnsureAddress(ctx, &address); err != nil {
 			return err
 		}
-		if err := ensureIPAddressOwnerReferences(r.Scheme, &address, claim, pool); err != nil {
-			return errors.Wrap(err, "ensure owner references")
+		if ownerRefErr := ensureIPAddressOwnerReferences(r.Scheme, &address, claim, pool); ownerRefErr != nil {
+			return errors.Wrap(ownerRefErr, "ensure owner references")
 		}
 		if val, ok := claim.Labels[clusterv1.ClusterNameLabel]; ok {
 			if address.Labels == nil {
@@ -196,23 +221,62 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ct
 		return unwrapResult(res), err
 	}
 
-	err = wait.PollUntilContextTimeout(ctx, 5*time.Millisecond, 5*time.Second, true, func(ctx context.Context) (bool, error) {
-		key := client.ObjectKeyFromObject(&address)
-		if err := r.Client.Get(ctx, key, &ipamv1.IPAddress{}); err != nil {
-			return false, client.IgnoreNotFound(err)
-		}
-		return true, nil
-	})
+	err = wait.PollUntilContextTimeout(
+		ctx,
+		addressCachePollInterval,
+		addressCachePollTimeout,
+		true,
+		func(ctx context.Context) (bool, error) {
+			key := client.ObjectKeyFromObject(&address)
+			if getErr := r.Client.Get(ctx, key, &ipamv1.IPAddress{}); getErr != nil {
+				return false, client.IgnoreNotFound(getErr)
+			}
+			return true, nil
+		},
+	)
 	if err != nil {
-		return ctrl.Result{}, errors.Wrapf(err, "wait for IPAddress %s/%s cache visibility", address.Namespace, address.Name)
+		return ctrl.Result{}, errors.Wrapf(
+			err,
+			"wait for IPAddress %s/%s cache visibility",
+			address.Namespace,
+			address.Name,
+		)
 	}
 
-	log.Info(fmt.Sprintf("IPAddress %s/%s (%s) has been %s", address.Namespace, address.Name, address.Spec.Address, operationResult))
+	logger.Info(
+		fmt.Sprintf(
+			"IPAddress %s/%s (%s) has been %s",
+			address.Namespace,
+			address.Name,
+			address.Spec.Address,
+			operationResult,
+		),
+	)
 	claim.Status.AddressRef = ipamv1.IPAddressReference{Name: address.Name}
 	return ctrl.Result{}, nil
 }
 
-func (r *ClaimReconciler) reconcileDelete(ctx context.Context, claim *ipamv1.IPAddressClaim, handler ClaimHandler) (ctrl.Result, error) {
+func (r *ClaimReconciler) getLinkedCluster(
+	ctx context.Context,
+	claim *ipamv1.IPAddressClaim,
+) (*clusterv1.Cluster, bool, error) {
+	if claim.Spec.ClusterName != "" {
+		cluster, err := clusterutil.GetClusterByName(ctx, r.Client, claim.Namespace, claim.Spec.ClusterName)
+		return cluster, true, err
+	}
+	if _, hasClusterLabel := claim.GetLabels()[clusterv1.ClusterNameLabel]; hasClusterLabel {
+		cluster, err := clusterutil.GetClusterFromMetadata(ctx, r.Client, claim.ObjectMeta)
+		return cluster, true, err
+	}
+
+	return nil, false, nil
+}
+
+func (r *ClaimReconciler) reconcileDelete(
+	ctx context.Context,
+	claim *ipamv1.IPAddressClaim,
+	handler ClaimHandler,
+) (ctrl.Result, error) {
 	if res, err := handler.ReleaseAddress(ctx); err != nil {
 		return unwrapResult(res), fmt.Errorf("release address: %w", err)
 	}
@@ -241,7 +305,11 @@ func (r *ClaimReconciler) reconcileDelete(ctx context.Context, claim *ipamv1.IPA
 func (r *ClaimReconciler) clusterToIPClaims(_ context.Context, cluster client.Object) []reconcile.Request {
 	requests := []reconcile.Request{}
 	claims := &ipamv1.IPAddressClaimList{}
-	if err := r.List(context.Background(), claims, client.MatchingFields{"clusterName": cluster.GetName()}); err != nil {
+	if err := r.List(
+		context.Background(),
+		claims,
+		client.MatchingFields{"clusterName": cluster.GetName()},
+	); err != nil {
 		return requests
 	}
 	for _, claim := range claims.Items {
@@ -258,7 +326,7 @@ func indexClusterName(o client.Object) []string {
 	if claim.Spec.ClusterName != "" {
 		return []string{claim.Spec.ClusterName}
 	}
-	if clusterName, ok := claim.Labels[clusterv1.ClusterNameLabel]; ok {
+	if clusterName, hasClusterLabel := claim.Labels[clusterv1.ClusterNameLabel]; hasClusterLabel {
 		return []string{clusterName}
 	}
 	return nil

@@ -163,7 +163,7 @@ KIND ?= kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
-GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GOLANGCI_LINT ?= golangci-lint
 CHAINSAW ?= $(LOCALBIN)/chainsaw
 
 ## Tool Versions
@@ -180,7 +180,6 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   [ -n "$$v" ] || { echo "Set ENVTEST_K8S_VERSION manually (k8s.io/api replace has no tag)" >&2; exit 1; }; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
-GOLANGCI_LINT_VERSION ?= v2.8.0
 CHAINSAW_VERSION ?= v0.2.14
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -206,14 +205,11 @@ $(ENVTEST): $(LOCALBIN)
 	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
 
 .PHONY: golangci-lint
-golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
-$(GOLANGCI_LINT): $(LOCALBIN)
-	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
-	@test -f .custom-gcl.yml && { \
-		echo "Building custom golangci-lint with plugins..." && \
-		$(GOLANGCI_LINT) custom --destination $(LOCALBIN) --name golangci-lint-custom && \
-		mv -f $(LOCALBIN)/golangci-lint-custom $(GOLANGCI_LINT); \
-	} || true
+golangci-lint: ## Verify golangci-lint is available locally.
+	@command -v "$(GOLANGCI_LINT)" >/dev/null 2>&1 || { \
+		echo "golangci-lint not found in PATH"; \
+		exit 1; \
+	}
 
 .PHONY: chainsaw
 chainsaw: $(CHAINSAW) ## Download Chainsaw locally if necessary.

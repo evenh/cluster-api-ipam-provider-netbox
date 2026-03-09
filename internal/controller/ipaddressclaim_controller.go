@@ -24,7 +24,6 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -39,6 +38,7 @@ import (
 )
 
 const poolExhaustedRequeueAfter = 15 * time.Second
+const missingAddressRequeueAfter = 5 * time.Second
 
 type claimPool interface {
 	client.Object
@@ -51,6 +51,7 @@ type NetBoxProviderAdapter struct {
 
 type netboxClaimHandler struct {
 	client.Client
+
 	claim         *ipamv1.IPAddressClaim
 	pool          claimPool
 	newClientFunc func(nb.ConnectionConfig) (nb.Client, error)
@@ -100,7 +101,11 @@ func (h *netboxClaimHandler) FetchPool(ctx context.Context) (client.Object, *ctr
 	switch h.claim.Spec.PoolRef.Kind {
 	case ipamv1alpha1.NetBoxIPPoolKind:
 		pool := &ipamv1alpha1.NetBoxIPPool{}
-		if err := h.Get(ctx, types.NamespacedName{Namespace: h.claim.Namespace, Name: h.claim.Spec.PoolRef.Name}, pool); err != nil {
+		if err := h.Get(
+			ctx,
+			types.NamespacedName{Namespace: h.claim.Namespace, Name: h.claim.Spec.PoolRef.Name},
+			pool,
+		); err != nil {
 			return nil, nil, err
 		}
 		h.pool = pool
@@ -132,8 +137,8 @@ func (h *netboxClaimHandler) EnsureAddress(ctx context.Context, address *ipamv1.
 	}
 
 	claimUIDField := nb.ClaimUIDCustomField(poolSpec)
-	if err := netboxClient.EnsureIPAddressCustomField(ctx, claimUIDField); err != nil {
-		return nil, err
+	if customFieldErr := netboxClient.EnsureIPAddressCustomField(ctx, claimUIDField); customFieldErr != nil {
+		return nil, customFieldErr
 	}
 
 	prefixIDs, err := netboxClient.ResolvePrefixIDs(ctx, poolSpec.Prefixes)
@@ -156,19 +161,20 @@ func (h *netboxClaimHandler) EnsureAddress(ctx context.Context, address *ipamv1.
 	}
 
 	for _, prefixID := range prefixIDs {
-		allocation, err := netboxClient.AllocateIPAddress(ctx, prefixID, request)
-		if err != nil {
-			if errors.Is(err, nb.ErrNoAvailableIP) {
+		allocation, allocationErr := netboxClient.AllocateIPAddress(ctx, prefixID, request)
+		if allocationErr != nil {
+			if errors.Is(allocationErr, nb.ErrNoAvailableIP) {
 				continue
 			}
-			return nil, err
+			return nil, allocationErr
 		}
 		address.Spec.Address = allocation.Address
-		address.Spec.Prefix = ptr.To(allocation.Prefix)
+		prefix := allocation.Prefix
+		address.Spec.Prefix = &prefix
 		return nil, nil
 	}
 
-	return &ctrl.Result{RequeueAfter: poolExhaustedRequeueAfter}, fmt.Errorf("pool exhausted")
+	return &ctrl.Result{RequeueAfter: poolExhaustedRequeueAfter}, errors.New("pool exhausted")
 }
 
 func (h *netboxClaimHandler) ReleaseAddress(ctx context.Context) (*ctrl.Result, error) {
@@ -194,7 +200,12 @@ func (h *netboxClaimHandler) ReleaseAddress(ctx context.Context) (*ctrl.Result, 
 		return nil, err
 	}
 
-	ipAddress, err := netboxClient.FindIPAddressByClaimUID(ctx, nb.OwnershipTag(poolSpec), nb.ClaimUIDCustomField(poolSpec), string(h.claim.GetUID()))
+	ipAddress, err := netboxClient.FindIPAddressByClaimUID(
+		ctx,
+		nb.OwnershipTag(poolSpec),
+		nb.ClaimUIDCustomField(poolSpec),
+		string(h.claim.GetUID()),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +222,7 @@ func (h *netboxClaimHandler) ReleaseAddress(ctx context.Context) (*ctrl.Result, 
 	}
 	if ipAddress == nil {
 		if k8sIPAddress.Name != "" {
-			return &ctrl.Result{RequeueAfter: 5 * time.Second}, fmt.Errorf(
+			return &ctrl.Result{RequeueAfter: missingAddressRequeueAfter}, fmt.Errorf(
 				"unable to locate NetBox IP for claim %s/%s with uid %s and address candidates %v",
 				h.claim.Namespace,
 				h.claim.Name,

@@ -17,10 +17,11 @@ limitations under the License.
 package ipamutil
 
 import (
+	stderrors "errors"
+
 	"github.com/pkg/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -47,9 +48,15 @@ func NewIPAddress(claim *ipamv1.IPAddressClaim, pool client.Object) ipamv1.IPAdd
 	}
 }
 
-func ensureIPAddressOwnerReferences(scheme *runtime.Scheme, address *ipamv1.IPAddress, claim *ipamv1.IPAddressClaim, pool client.Object) error {
+func ensureIPAddressOwnerReferences(
+	scheme *runtime.Scheme,
+	address *ipamv1.IPAddress,
+	claim *ipamv1.IPAddressClaim,
+	pool client.Object,
+) error {
 	if err := controllerutil.SetControllerReference(claim, address, scheme); err != nil {
-		if _, ok := err.(*controllerutil.AlreadyOwnedError); !ok {
+		var alreadyOwnedErr *controllerutil.AlreadyOwnedError
+		if !stderrors.As(err, &alreadyOwnedErr) {
 			return errors.Wrap(err, "failed to update address claim owner reference")
 		}
 	}
@@ -68,7 +75,9 @@ func ensureIPAddressOwnerReferences(scheme *runtime.Scheme, address *ipamv1.IPAd
 		}
 	}
 
-	address.OwnerReferences[poolRefIdx].Controller = ptr.To(false)
-	address.OwnerReferences[poolRefIdx].BlockOwnerDeletion = ptr.To(true)
+	isController := false
+	blockOwnerDeletion := true
+	address.OwnerReferences[poolRefIdx].Controller = &isController
+	address.OwnerReferences[poolRefIdx].BlockOwnerDeletion = &blockOwnerDeletion
 	return nil
 }

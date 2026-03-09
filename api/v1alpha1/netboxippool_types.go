@@ -28,8 +28,10 @@ import (
 // NetBoxIPPool is the Schema for the netboxippools API.
 type NetBoxIPPool struct {
 	metav1.TypeMeta `json:",inline"`
+
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec NetBoxIPPoolSpec `json:"spec"`
+
+	Spec   NetBoxIPPoolSpec   `json:"spec"`
 	Status NetBoxIPPoolStatus `json:"status,omitempty"`
 }
 
@@ -38,8 +40,10 @@ type NetBoxIPPool struct {
 // NetBoxIPPoolList contains a list of NetBoxIPPool.
 type NetBoxIPPoolList struct {
 	metav1.TypeMeta `json:",inline"`
+
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []NetBoxIPPool `json:"items"`
+
+	Items []NetBoxIPPool `json:"items"`
 }
 
 func (p *NetBoxIPPool) PoolSpec() *NetBoxIPPoolSpec {

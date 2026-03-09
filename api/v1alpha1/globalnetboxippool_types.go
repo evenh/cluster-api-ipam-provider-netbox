@@ -30,8 +30,9 @@ import (
 type GlobalNetBoxIPPool struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              GlobalNetBoxIPPoolSpec `json:"spec"`
-	Status            NetBoxIPPoolStatus     `json:"status,omitempty"`
+
+	Spec   GlobalNetBoxIPPoolSpec `json:"spec"`
+	Status NetBoxIPPoolStatus     `json:"status,omitempty"`
 }
 
 // GlobalNetBoxIPPoolSpec defines the desired state of GlobalNetBoxIPPool.
@@ -45,8 +46,10 @@ type GlobalNetBoxIPPoolSpec struct {
 // GlobalNetBoxIPPoolList contains a list of GlobalNetBoxIPPool.
 type GlobalNetBoxIPPoolList struct {
 	metav1.TypeMeta `json:",inline"`
+
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []GlobalNetBoxIPPool `json:"items"`
+
+	Items []GlobalNetBoxIPPool `json:"items"`
 }
 
 func (p *GlobalNetBoxIPPool) PoolSpec() *NetBoxIPPoolSpec {

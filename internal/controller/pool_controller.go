@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -47,7 +48,11 @@ func reconcilePoolStatus(ctx context.Context, c client.Client, pool statusPool, 
 
 	status := pool.PoolStatus()
 	status.ObservedGeneration = pool.GetGeneration()
-	status.Addresses = &ipamv1alpha1.NetBoxPoolStatusAddresses{Allocated: int32(len(addresses))}
+	allocated, err := safeAllocatedCount(len(addresses))
+	if err != nil {
+		return err
+	}
+	status.Addresses = &ipamv1alpha1.NetBoxPoolStatusAddresses{Allocated: allocated}
 	status.Conditions = []metav1.Condition{{
 		Type:               "Ready",
 		Status:             metav1.ConditionTrue,
@@ -80,7 +85,11 @@ func ensureClusterNameLabel(pool client.Object, clusterName string) {
 	pool.SetLabels(labels)
 }
 
-func listAddressesInUse(ctx context.Context, c client.Client, namespace, kind, name string) ([]ipamv1.IPAddress, error) {
+func listAddressesInUse(
+	ctx context.Context,
+	c client.Client,
+	namespace, kind, name string,
+) ([]ipamv1.IPAddress, error) {
 	list := &ipamv1.IPAddressList{}
 	opts := []client.ListOption{
 		client.MatchingFields{
@@ -105,4 +114,13 @@ func ignoreNotFound(err error) error {
 		return nil
 	}
 	return err
+}
+
+func safeAllocatedCount(count int) (int32, error) {
+	value, err := strconv.ParseInt(strconv.FormatInt(int64(count), 10), 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("convert allocated address count %d to int32: %w", count, err)
+	}
+
+	return int32(value), nil
 }

@@ -31,7 +31,12 @@ func TestLoadConnectionConfig(t *testing.T) {
 			},
 		}).Build()
 
-		cfg, err := LoadConnectionConfig(context.Background(), client, "default", ipamv1alpha1.NamespacedSecretReference{Name: "netbox"})
+		cfg, err := LoadConnectionConfig(
+			context.Background(),
+			client,
+			"default",
+			ipamv1alpha1.NamespacedSecretReference{Name: "netbox"},
+		)
 		if err != nil {
 			t.Fatalf("LoadConnectionConfig() error = %v", err)
 		}
@@ -52,10 +57,15 @@ func TestLoadConnectionConfig(t *testing.T) {
 			},
 		}).Build()
 
-		cfg, err := LoadConnectionConfig(context.Background(), client, "default", ipamv1alpha1.NamespacedSecretReference{
-			Name:      "netbox",
-			Namespace: "shared",
-		})
+		cfg, err := LoadConnectionConfig(
+			context.Background(),
+			client,
+			"default",
+			ipamv1alpha1.NamespacedSecretReference{
+				Name:      "netbox",
+				Namespace: "shared",
+			},
+		)
 		if err != nil {
 			t.Fatalf("LoadConnectionConfig() error = %v", err)
 		}
@@ -77,7 +87,12 @@ func TestLoadConnectionConfig(t *testing.T) {
 			},
 		}).Build()
 
-		if _, err := LoadConnectionConfig(context.Background(), client, "default", ipamv1alpha1.NamespacedSecretReference{Name: "netbox"}); err == nil {
+		if _, err := LoadConnectionConfig(
+			context.Background(),
+			client,
+			"default",
+			ipamv1alpha1.NamespacedSecretReference{Name: "netbox"},
+		); err == nil {
 			t.Fatal("expected error for invalid insecureSkipVerify")
 		}
 	})
@@ -93,7 +108,12 @@ func TestLoadConnectionConfig(t *testing.T) {
 			},
 		}).Build()
 
-		if _, err := LoadConnectionConfig(context.Background(), client, "default", ipamv1alpha1.NamespacedSecretReference{Name: "netbox"}); err == nil {
+		if _, err := LoadConnectionConfig(
+			context.Background(),
+			client,
+			"default",
+			ipamv1alpha1.NamespacedSecretReference{Name: "netbox"},
+		); err == nil {
 			t.Fatal("expected error when token is missing")
 		}
 	})

@@ -22,48 +22,51 @@ func TestAllocateIPAddressEnsuresTags(t *testing.T) {
 	var allocateRequests [][]map[string]any
 	var userAgents []string
 
-	client := newTestAPIClient("https://netbox.example.com", roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		userAgents = append(userAgents, r.Header.Get("User-Agent"))
+	client := newTestAPIClient(
+		"https://netbox.example.com",
+		roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			userAgents = append(userAgents, r.Header.Get("User-Agent"))
 
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/extras/tags/":
-			name := r.URL.Query().Get("name")
-			if slug, ok := tags[name]; ok {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/api/extras/tags/":
+				name := r.URL.Query().Get("name")
+				if slug, ok := tags[name]; ok {
+					return jsonResponse(r, http.StatusOK, map[string]any{
+						"count": 1,
+						"results": []map[string]any{{
+							"name": name,
+							"slug": slug,
+						}},
+					}), nil
+				}
 				return jsonResponse(r, http.StatusOK, map[string]any{
-					"count": 1,
-					"results": []map[string]any{{
-						"name": name,
-						"slug": slug,
-					}},
+					"count":   0,
+					"results": []any{},
 				}), nil
+			case r.Method == http.MethodPost && r.URL.Path == "/api/extras/tags/":
+				var request netBoxTag
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatalf("decode tag request: %v", err)
+				}
+				createdTags = append(createdTags, request)
+				tags[request.Name] = request.Slug
+				return jsonResponse(r, http.StatusCreated, request), nil
+			case r.Method == http.MethodPost && r.URL.Path == "/api/ipam/prefixes/7/available-ips/":
+				var request []map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatalf("decode allocation request: %v", err)
+				}
+				allocateRequests = append(allocateRequests, request)
+				return jsonResponse(r, http.StatusCreated, []map[string]any{{
+					"id":       99,
+					"address":  "10.0.0.10/24",
+					"dns_name": "claimed.example.com",
+				}}), nil
+			default:
+				return jsonResponse(r, http.StatusNotFound, map[string]any{"detail": "not found"}), nil
 			}
-			return jsonResponse(r, http.StatusOK, map[string]any{
-				"count":   0,
-				"results": []any{},
-			}), nil
-		case r.Method == http.MethodPost && r.URL.Path == "/api/extras/tags/":
-			var request netBoxTag
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode tag request: %v", err)
-			}
-			createdTags = append(createdTags, request)
-			tags[request.Name] = request.Slug
-			return jsonResponse(r, http.StatusCreated, request), nil
-		case r.Method == http.MethodPost && r.URL.Path == "/api/ipam/prefixes/7/available-ips/":
-			var request []map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode allocation request: %v", err)
-			}
-			allocateRequests = append(allocateRequests, request)
-			return jsonResponse(r, http.StatusCreated, []map[string]any{{
-				"id":       99,
-				"address":  "10.0.0.10/24",
-				"dns_name": "claimed.example.com",
-			}}), nil
-		default:
-			return jsonResponse(r, http.StatusNotFound, map[string]any{"detail": "not found"}), nil
-		}
-	}))
+		}),
+	)
 
 	address, err := client.AllocateIPAddress(context.Background(), 7, AllocationRequest{
 		Metadata: EffectiveMetadata{
@@ -105,18 +108,18 @@ func TestAllocateIPAddressEnsuresTags(t *testing.T) {
 	}
 
 	request := allocateRequests[0][0]
-	rawTags, ok := request["tags"].([]any)
-	if !ok || len(rawTags) != 3 {
+	rawTags, hasTags := request["tags"].([]any)
+	if !hasTags || len(rawTags) != 3 {
 		t.Fatalf("allocation request tags = %#v, want 3 tags", request["tags"])
 	}
-	if _, ok := request["address"]; ok {
+	if _, hasAddress := request["address"]; hasAddress {
 		t.Fatalf("allocation request unexpectedly included address: %#v", request["address"])
 	}
 
 	gotTagRefs := make([]string, 0, len(rawTags))
 	for _, rawTag := range rawTags {
-		tag, ok := rawTag.(map[string]any)
-		if !ok {
+		tag, isMap := rawTag.(map[string]any)
+		if !isMap {
 			t.Fatalf("tag payload = %#v, want object", rawTag)
 		}
 		name, _ := tag["name"].(string)
@@ -140,27 +143,30 @@ func TestAllocateIPAddressEnsuresTags(t *testing.T) {
 }
 
 func TestResolvePrefixIDs(t *testing.T) {
-	client := newTestAPIClient("https://netbox.example.com", roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/ipam/prefixes/" {
-			return jsonResponse(r, http.StatusNotFound, map[string]any{"detail": "not found"}), nil
-		}
-		if got := r.Header.Get("User-Agent"); got != UserAgent {
-			t.Fatalf("user-agent = %q, want %q", got, UserAgent)
-		}
-		if r.URL.Query().Get("prefix") != "10.20.0.0/24" {
-			t.Fatalf("unexpected prefix query: %q", r.URL.RawQuery)
-		}
-		if r.URL.Query().Get("vrf_id") != "23" {
-			t.Fatalf("unexpected vrf query: %q", r.URL.RawQuery)
-		}
-		return jsonResponse(r, http.StatusOK, map[string]any{
-			"count": 1,
-			"results": []map[string]any{{
-				"id":     88,
-				"prefix": "10.20.0.0/24",
-			}},
-		}), nil
-	}))
+	client := newTestAPIClient(
+		"https://netbox.example.com",
+		roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.Method != http.MethodGet || r.URL.Path != "/api/ipam/prefixes/" {
+				return jsonResponse(r, http.StatusNotFound, map[string]any{"detail": "not found"}), nil
+			}
+			if got := r.Header.Get("User-Agent"); got != UserAgent {
+				t.Fatalf("user-agent = %q, want %q", got, UserAgent)
+			}
+			if r.URL.Query().Get("prefix") != "10.20.0.0/24" {
+				t.Fatalf("unexpected prefix query: %q", r.URL.RawQuery)
+			}
+			if r.URL.Query().Get("vrf_id") != "23" {
+				t.Fatalf("unexpected vrf query: %q", r.URL.RawQuery)
+			}
+			return jsonResponse(r, http.StatusOK, map[string]any{
+				"count": 1,
+				"results": []map[string]any{{
+					"id":     88,
+					"prefix": "10.20.0.0/24",
+				}},
+			}), nil
+		}),
+	)
 
 	vrfID := int32(23)
 	ids, err := client.ResolvePrefixIDs(context.Background(), []ipamv1alpha1.NetBoxPrefixReference{{
@@ -176,23 +182,27 @@ func TestResolvePrefixIDs(t *testing.T) {
 }
 
 func TestEnsureIPAddressCustomField(t *testing.T) {
-	client := newTestAPIClient("https://netbox.example.com", roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/extras/custom-fields/" {
-			return jsonResponse(r, http.StatusNotFound, map[string]any{"detail": "not found"}), nil
-		}
-		if got := r.Header.Get("User-Agent"); got != UserAgent {
-			t.Fatalf("user-agent = %q, want %q", got, UserAgent)
-		}
-		if r.URL.Query().Get("name") != DefaultClaimUIDCustomField || r.URL.Query().Get("object_type") != "ipam.ipaddress" {
-			t.Fatalf("unexpected custom field query: %q", r.URL.RawQuery)
-		}
-		return jsonResponse(r, http.StatusOK, map[string]any{
-			"count": 1,
-			"results": []map[string]any{{
-				"name": DefaultClaimUIDCustomField,
-			}},
-		}), nil
-	}))
+	client := newTestAPIClient(
+		"https://netbox.example.com",
+		roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.Method != http.MethodGet || r.URL.Path != "/api/extras/custom-fields/" {
+				return jsonResponse(r, http.StatusNotFound, map[string]any{"detail": "not found"}), nil
+			}
+			if got := r.Header.Get("User-Agent"); got != UserAgent {
+				t.Fatalf("user-agent = %q, want %q", got, UserAgent)
+			}
+			if r.URL.Query().Get("name") != DefaultClaimUIDCustomField ||
+				r.URL.Query().Get("object_type") != "ipam.ipaddress" {
+				t.Fatalf("unexpected custom field query: %q", r.URL.RawQuery)
+			}
+			return jsonResponse(r, http.StatusOK, map[string]any{
+				"count": 1,
+				"results": []map[string]any{{
+					"name": DefaultClaimUIDCustomField,
+				}},
+			}), nil
+		}),
+	)
 
 	if err := client.EnsureIPAddressCustomField(context.Background(), DefaultClaimUIDCustomField); err != nil {
 		t.Fatalf("EnsureIPAddressCustomField() error = %v", err)

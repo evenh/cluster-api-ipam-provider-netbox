@@ -26,12 +26,15 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
 
 	ipamv1alpha1 "github.com/evenh/cluster-api-ipam-provider-netbox/api/v1alpha1"
 )
+
+const addressPartsCount = 2
 
 type Client interface {
 	ResolvePrefixIDs(ctx context.Context, refs []ipamv1alpha1.NetBoxPrefixReference) ([]int32, error)
@@ -64,7 +67,7 @@ type APIClient struct {
 	httpClient *http.Client
 }
 
-const UserAgent = "cluster-api-ipam-provider-netbox/dev"
+const UserAgent = "cluster-api-ipam-provider-netbox/dev" // TODO: Dynamic version
 
 type netBoxListResponse[T any] struct {
 	Count   int `json:"count"`
@@ -82,12 +85,12 @@ type netBoxPrefix struct {
 }
 
 type netBoxIPAddress struct {
-	ID           int32                  `json:"id"`
-	Address      string                 `json:"address"`
-	DNSName      string                 `json:"dns_name"`
-	Status       *netBoxStatus          `json:"status,omitempty"`
-	Tags         []netBoxTag            `json:"tags,omitempty"`
-	CustomFields map[string]interface{} `json:"custom_fields,omitempty"`
+	ID           int32          `json:"id"`
+	Address      string         `json:"address"`
+	DNSName      string         `json:"dns_name"`
+	Status       *netBoxStatus  `json:"status,omitempty"`
+	Tags         []netBoxTag    `json:"tags,omitempty"`
+	CustomFields map[string]any `json:"custom_fields,omitempty"`
 }
 
 type netBoxStatus struct {
@@ -118,8 +121,8 @@ func NewClient(cfg ConnectionConfig) (Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err := SplitBaseURL(cfg.BaseURL); err != nil {
-		return nil, err
+	if _, _, splitErr := SplitBaseURL(cfg.BaseURL); splitErr != nil {
+		return nil, splitErr
 	}
 
 	return &APIClient{
@@ -155,7 +158,7 @@ func (c *APIClient) ResolvePrefixIDs(ctx context.Context, refs []ipamv1alpha1.Ne
 				return nil, fmt.Errorf("prefix reference %q is ambiguous", ref.CIDR)
 			}
 		default:
-			return nil, fmt.Errorf("prefix reference must include id or cidr")
+			return nil, errors.New("prefix reference must include id or cidr")
 		}
 	}
 	return ids, nil
@@ -176,19 +179,23 @@ func (c *APIClient) EnsureIPAddressCustomField(ctx context.Context, fieldName st
 	return nil
 }
 
-func (c *APIClient) AllocateIPAddress(ctx context.Context, prefixID int32, req AllocationRequest) (*AllocatedAddress, error) {
+func (c *APIClient) AllocateIPAddress(
+	ctx context.Context,
+	prefixID int32,
+	req AllocationRequest,
+) (*AllocatedAddress, error) {
 	tags, err := c.ensureTags(ctx, appendUnique(req.Metadata.Tags, req.OwnershipTag))
 	if err != nil {
 		return nil, fmt.Errorf("ensure tags: %w", err)
 	}
 
-	customFields := make(map[string]interface{}, len(req.Metadata.CustomFields)+1)
+	customFields := make(map[string]any, len(req.Metadata.CustomFields)+1)
 	for k, v := range req.Metadata.CustomFields {
 		customFields[k] = v
 	}
 	customFields[req.ClaimUIDFieldName] = req.ClaimUID
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"status":        req.Status,
 		"description":   req.Description,
 		"custom_fields": customFields,
@@ -205,11 +212,18 @@ func (c *APIClient) AllocateIPAddress(ctx context.Context, prefixID int32, req A
 	}
 
 	var created []netBoxIPAddress
-	if err := c.post(ctx, fmt.Sprintf("/api/ipam/prefixes/%d/available-ips/", prefixID), []map[string]interface{}{payload}, &created, http.StatusOK, http.StatusCreated); err != nil {
-		if isNoAvailableIPError(err) {
+	if postErr := c.post(
+		ctx,
+		fmt.Sprintf("/api/ipam/prefixes/%d/available-ips/", prefixID),
+		[]map[string]any{payload},
+		&created,
+		http.StatusOK,
+		http.StatusCreated,
+	); postErr != nil {
+		if isNoAvailableIPError(postErr) {
 			return nil, ErrNoAvailableIP
 		}
-		return nil, fmt.Errorf("allocate available ip from prefix %d: %w", prefixID, err)
+		return nil, fmt.Errorf("allocate available ip from prefix %d: %w", prefixID, postErr)
 	}
 	if len(created) == 0 {
 		return nil, ErrNoAvailableIP
@@ -218,7 +232,10 @@ func (c *APIClient) AllocateIPAddress(ctx context.Context, prefixID int32, req A
 	return mapIPAddress(created[0]), nil
 }
 
-func (c *APIClient) FindIPAddressByClaimUID(ctx context.Context, ownershipTag, fieldName, claimUID string) (*AllocatedAddress, error) {
+func (c *APIClient) FindIPAddressByClaimUID(
+	ctx context.Context,
+	ownershipTag, fieldName, claimUID string,
+) (*AllocatedAddress, error) {
 	query := url.Values{}
 	query.Set("tag", ownershipTag)
 
@@ -234,7 +251,10 @@ func (c *APIClient) FindIPAddressByClaimUID(ctx context.Context, ownershipTag, f
 	return nil, nil
 }
 
-func (c *APIClient) FindIPAddressByAddress(ctx context.Context, ownershipTag, address string) (*AllocatedAddress, error) {
+func (c *APIClient) FindIPAddressByAddress(
+	ctx context.Context,
+	ownershipTag, address string,
+) (*AllocatedAddress, error) {
 	query := url.Values{}
 	query.Set("tag", ownershipTag)
 	query.Set("address", address)
@@ -253,7 +273,16 @@ func (c *APIClient) FindIPAddressByAddress(ctx context.Context, ownershipTag, ad
 }
 
 func (c *APIClient) DeleteIPAddress(ctx context.Context, id int32) error {
-	err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/api/ipam/ip-addresses/%d/", id), nil, nil, nil, http.StatusNoContent, http.StatusNotFound)
+	err := c.do(
+		ctx,
+		http.MethodDelete,
+		fmt.Sprintf("/api/ipam/ip-addresses/%d/", id),
+		nil,
+		nil,
+		nil,
+		http.StatusNoContent,
+		http.StatusNotFound,
+	)
 	if err == nil {
 		return nil
 	}
@@ -270,7 +299,7 @@ var nonSlugCharacters = regexp.MustCompile(`[^a-z0-9_-]+`)
 func mapIPAddress(ip netBoxIPAddress) *AllocatedAddress {
 	address := strings.TrimSpace(ip.Address)
 	prefix := int32(0)
-	if parts := strings.SplitN(address, "/", 2); len(parts) == 2 {
+	if parts := strings.SplitN(address, "/", addressPartsCount); len(parts) == addressPartsCount {
 		address = parts[0]
 		if parsedPrefix, err := parseInt32(parts[1]); err == nil {
 			prefix = parsedPrefix
@@ -407,15 +436,22 @@ func isNoAvailableIPError(err error) bool {
 	return strings.Contains(body, "available ip") || strings.Contains(body, "available addresses")
 }
 
-func (c *APIClient) get(ctx context.Context, path string, query url.Values, response interface{}) error {
+func (c *APIClient) get(ctx context.Context, path string, query url.Values, response any) error {
 	return c.do(ctx, http.MethodGet, path, query, nil, response, http.StatusOK)
 }
 
-func (c *APIClient) post(ctx context.Context, path string, request interface{}, response interface{}, expectedStatus ...int) error {
+func (c *APIClient) post(ctx context.Context, path string, request any, response any, expectedStatus ...int) error {
 	return c.do(ctx, http.MethodPost, path, nil, request, response, expectedStatus...)
 }
 
-func (c *APIClient) do(ctx context.Context, method, path string, query url.Values, request interface{}, response interface{}, expectedStatus ...int) error {
+func (c *APIClient) do(
+	ctx context.Context,
+	method, path string,
+	query url.Values,
+	request any,
+	response any,
+	expectedStatus ...int,
+) error {
 	var body io.Reader
 	if request != nil {
 		payload, err := json.Marshal(request)
@@ -461,17 +497,12 @@ func (c *APIClient) do(ctx context.Context, method, path string, query url.Value
 	if response == nil || len(respBody) == 0 {
 		return nil
 	}
-	if err := json.Unmarshal(respBody, response); err != nil {
-		return fmt.Errorf("decode %s %s response: %w", method, path, err)
+	if unmarshalErr := json.Unmarshal(respBody, response); unmarshalErr != nil {
+		return fmt.Errorf("decode %s %s response: %w", method, path, unmarshalErr)
 	}
 	return nil
 }
 
 func containsStatus(statuses []int, status int) bool {
-	for _, candidate := range statuses {
-		if candidate == status {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(statuses, status)
 }

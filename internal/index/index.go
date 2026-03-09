@@ -31,10 +31,12 @@ const (
 )
 
 func SetupIndexes(ctx context.Context, mgr manager.Manager) error {
-	if err := mgr.GetCache().IndexField(ctx, &ipamv1.IPAddress{}, IPAddressPoolRefCombinedField, IPAddressByCombinedPoolRef); err != nil {
+	if err := mgr.GetCache().
+		IndexField(ctx, &ipamv1.IPAddress{}, IPAddressPoolRefCombinedField, IPAddressByCombinedPoolRef); err != nil {
 		return err
 	}
-	return mgr.GetCache().IndexField(ctx, &ipamv1.IPAddressClaim{}, IPAddressClaimPoolRefCombinedField, ipAddressClaimByCombinedPoolRef)
+	return mgr.GetCache().
+		IndexField(ctx, &ipamv1.IPAddressClaim{}, IPAddressClaimPoolRefCombinedField, ipAddressClaimByCombinedPoolRef)
 }
 
 func IPAddressByCombinedPoolRef(obj client.Object) []string {
