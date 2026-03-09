@@ -1,0 +1,29 @@
+apiVersion: ipam.cluster.x-k8s.io/v1beta2
+kind: IPAddressClaim
+metadata:
+  name: claim
+  namespace: ($values.namespace)
+status:
+  addressRef:
+    name: claim
+---
+apiVersion: ipam.cluster.x-k8s.io/v1beta2
+kind: IPAddress
+metadata:
+  name: claim
+  namespace: ($values.namespace)
+spec:
+  claimRef:
+    name: claim
+  poolRef:
+    apiGroup: ipam.cluster.x-k8s.io
+    kind: GlobalNetBoxIPPool
+    name: global-netbox-pool
+  prefix: 24
+---
+apiVersion: ipam.cluster.x-k8s.io/v1alpha1
+kind: GlobalNetBoxIPPool
+metadata:
+  name: global-netbox-pool
+  labels:
+    cluster.x-k8s.io/cluster-name: global-move-cluster

@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ($values.namespace)
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: netbox-credentials
+  namespace: ($values.namespace)
+stringData:
+  url: ($values.netboxURL)
+  token: ($values.netboxToken)
+---
+apiVersion: ipam.cluster.x-k8s.io/v1alpha1
+kind: GlobalNetBoxIPPool
+metadata:
+  name: global-netbox-pool
+spec:
+  clusterName: global-move-cluster
+  connectionSecretRef:
+    name: netbox-credentials
+    namespace: ($values.namespace)
+  prefixes:
+  - cidr: ($values.prefixCIDR)
+  metadataDefaults:
+    dnsName: global.example.com
+    tags:
+    - global-default
+    customFields:
+      source: global
+  ipAddressStatus: reserved
+---
+apiVersion: ipam.cluster.x-k8s.io/v1beta2
+kind: IPAddressClaim
+metadata:
+  name: claim
+  namespace: ($values.namespace)
+spec:
+  poolRef:
+    apiGroup: ipam.cluster.x-k8s.io
+    kind: GlobalNetBoxIPPool
+    name: global-netbox-pool

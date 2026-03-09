@@ -1,0 +1,30 @@
+apiVersion: ipam.cluster.x-k8s.io/v1beta2
+kind: IPAddressClaim
+metadata:
+  name: claim
+  namespace: ($values.namespace)
+status:
+  addressRef:
+    name: claim
+---
+apiVersion: ipam.cluster.x-k8s.io/v1beta2
+kind: IPAddress
+metadata:
+  name: claim
+  namespace: ($values.namespace)
+spec:
+  claimRef:
+    name: claim
+  poolRef:
+    apiGroup: ipam.cluster.x-k8s.io
+    kind: NetBoxIPPool
+    name: netbox-pool
+  prefix: 24
+---
+apiVersion: ipam.cluster.x-k8s.io/v1alpha1
+kind: NetBoxIPPool
+metadata:
+  name: netbox-pool
+  namespace: ($values.namespace)
+  labels:
+    cluster.x-k8s.io/cluster-name: namespaced-move-cluster
