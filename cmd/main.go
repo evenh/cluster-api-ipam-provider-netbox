@@ -208,6 +208,7 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, watchFilter string)
 	if err := (&ipamutil.ClaimReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
+		Recorder:         mgr.GetEventRecorder("ipaddressclaim"),
 		WatchFilterValue: watchFilter,
 		Adapter:          &controller.NetBoxProviderAdapter{},
 	}).SetupWithManager(ctx, mgr); err != nil {
@@ -215,15 +216,17 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, watchFilter string)
 	}
 
 	if err := (&controller.NetBoxIPPoolReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("netboxippool"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("create NetBoxIPPool reconciler: %w", err)
 	}
 
 	if err := (&controller.GlobalNetBoxIPPoolReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("globalnetboxippool"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("create GlobalNetBoxIPPool reconciler: %w", err)
 	}

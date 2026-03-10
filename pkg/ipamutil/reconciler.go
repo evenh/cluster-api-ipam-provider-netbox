@@ -23,11 +23,13 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/tools/events"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
 	clusterutil "sigs.k8s.io/cluster-api/util"
@@ -49,12 +51,15 @@ const (
 	ProtectAddressFinalizer  = "ipam.cluster.x-k8s.io/ProtectAddress"
 	addressCachePollInterval = 5 * time.Millisecond
 	addressCachePollTimeout  = 5 * time.Second
+	reasonAddressAllocated   = "AddressAllocated"
+	reasonAddressReleased    = "AddressReleased"
 )
 
 type ClaimReconciler struct {
 	client.Client
 
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
 
 	WatchFilterValue string
 	Adapter          ProviderAdapter
@@ -198,6 +203,7 @@ func (r *ClaimReconciler) reconcileClaimAddress(
 	}
 
 	address := NewIPAddress(claim, pool)
+	hadAddressRef := claim.Status.AddressRef.Name != ""
 	operationResult, err := controllerutil.CreateOrPatch(ctx, r.Client, &address, func() error {
 		if res, err = handler.EnsureAddress(ctx, &address); err != nil {
 			return err
@@ -253,6 +259,15 @@ func (r *ClaimReconciler) reconcileClaimAddress(
 		),
 	)
 	claim.Status.AddressRef = ipamv1.IPAddressReference{Name: address.Name}
+	if !hadAddressRef && address.Spec.Address != "" {
+		recordClaimEvent(
+			r.Recorder,
+			claim,
+			reasonAddressAllocated,
+			"AllocateAddress",
+			fmt.Sprintf("Allocated IP address %s", address.Spec.Address),
+		)
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -296,6 +311,13 @@ func (r *ClaimReconciler) reconcileDelete(
 		if err := r.Client.Delete(ctx, address); err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
+		recordClaimEvent(
+			r.Recorder,
+			claim,
+			reasonAddressReleased,
+			"ReleaseAddress",
+			fmt.Sprintf("Released IP address %s", address.Spec.Address),
+		)
 	}
 
 	controllerutil.RemoveFinalizer(claim, ReleaseAddressFinalizer)
@@ -337,4 +359,16 @@ func unwrapResult(result *ctrl.Result) ctrl.Result {
 		return ctrl.Result{}
 	}
 	return *result
+}
+
+func recordClaimEvent(
+	recorder events.EventRecorder,
+	claim *ipamv1.IPAddressClaim,
+	reason, action, message string,
+) {
+	if recorder == nil || claim == nil {
+		return
+	}
+
+	recorder.Eventf(claim, nil, corev1.EventTypeNormal, reason, action, message)
 }

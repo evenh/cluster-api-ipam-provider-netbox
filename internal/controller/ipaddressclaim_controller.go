@@ -67,6 +67,8 @@ var _ ipamutil.ClaimHandler = &netboxClaimHandler{}
 // +kubebuilder:rbac:groups=ipam.cluster.x-k8s.io,resources=ipaddresses/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (a *NetBoxProviderAdapter) SetupWithManager(_ context.Context, b *ctrl.Builder) error {
 	b.For(&ipamv1.IPAddressClaim{}, builder.WithPredicates(

@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -68,7 +70,7 @@ func TestReconcilePoolStatus(t *testing.T) {
 			WithObjects(address, other).
 			Build()
 
-		if err := reconcilePoolStatus(ctx, k8sClient, pool, ipamv1alpha1.NetBoxIPPoolKind); err != nil {
+		if err := reconcilePoolStatus(ctx, k8sClient, nil, pool, ipamv1alpha1.NetBoxIPPoolKind); err != nil {
 			t.Fatalf("reconcilePoolStatus() error = %v", err)
 		}
 		if !containsString(pool.Finalizers, poolFinalizer) {
@@ -104,7 +106,7 @@ func TestReconcilePoolStatus(t *testing.T) {
 			WithIndex(&ipamv1.IPAddress{}, index.IPAddressPoolRefCombinedField, index.IPAddressByCombinedPoolRef).
 			Build()
 
-		if err := reconcilePoolStatus(ctx, k8sClient, pool, ipamv1alpha1.NetBoxIPPoolKind); err != nil {
+		if err := reconcilePoolStatus(ctx, k8sClient, nil, pool, ipamv1alpha1.NetBoxIPPoolKind); err != nil {
 			t.Fatalf("reconcilePoolStatus() error = %v", err)
 		}
 		if got := pool.Labels[clusterv1.ClusterNameLabel]; got != "existing-cluster" {
@@ -139,12 +141,17 @@ func TestReconcilePoolStatus(t *testing.T) {
 			WithObjects(address).
 			Build()
 
-		err := reconcilePoolStatus(ctx, k8sClient, pool, ipamv1alpha1.NetBoxIPPoolKind)
+		recorder := events.NewFakeRecorder(1)
+		err := reconcilePoolStatus(ctx, k8sClient, recorder, pool, ipamv1alpha1.NetBoxIPPoolKind)
 		if err == nil || !strings.Contains(err.Error(), "still has 1 allocated IPAddresses") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if !containsString(pool.Finalizers, poolFinalizer) {
 			t.Fatalf("expected finalizer to remain, got %#v", pool.Finalizers)
+		}
+		event := <-recorder.Events
+		if !strings.Contains(event, corev1.EventTypeWarning) || !strings.Contains(event, reasonPoolInUse) {
+			t.Fatalf("unexpected event: %q", event)
 		}
 	})
 
@@ -164,7 +171,7 @@ func TestReconcilePoolStatus(t *testing.T) {
 			WithIndex(&ipamv1.IPAddress{}, index.IPAddressPoolRefCombinedField, index.IPAddressByCombinedPoolRef).
 			Build()
 
-		if err := reconcilePoolStatus(ctx, k8sClient, pool, ipamv1alpha1.NetBoxIPPoolKind); err != nil {
+		if err := reconcilePoolStatus(ctx, k8sClient, nil, pool, ipamv1alpha1.NetBoxIPPoolKind); err != nil {
 			t.Fatalf("reconcilePoolStatus() error = %v", err)
 		}
 		if containsString(pool.Finalizers, poolFinalizer) {

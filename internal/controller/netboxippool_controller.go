@@ -20,6 +20,7 @@ import (
 	"context"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,12 +33,15 @@ import (
 type NetBoxIPPoolReconciler struct {
 	client.Client
 
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=ipam.cluster.x-k8s.io,resources=netboxippools,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ipam.cluster.x-k8s.io,resources=netboxippools/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ipam.cluster.x-k8s.io,resources=netboxippools/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *NetBoxIPPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -45,7 +49,7 @@ func (r *NetBoxIPPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
 		return ctrl.Result{}, ignoreNotFound(err)
 	}
-	if err := reconcilePoolStatus(ctx, r.Client, pool, ipamv1alpha1.NetBoxIPPoolKind); err != nil {
+	if err := reconcilePoolStatus(ctx, r.Client, r.Recorder, pool, ipamv1alpha1.NetBoxIPPoolKind); err != nil {
 		logger.Error(err, "reconcile pool")
 		return ctrl.Result{}, err
 	}
