@@ -209,6 +209,37 @@ func TestEnsureIPAddressCustomField(t *testing.T) {
 	}
 }
 
+func TestAuthorizationHeaderValue(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name  string
+		token string
+		want  string
+	}{
+		{
+			name:  "v1 token",
+			token: "0123456789abcdef0123456789abcdef01234567",
+			want:  "Token 0123456789abcdef0123456789abcdef01234567",
+		},
+		{
+			name:  "v2 token",
+			token: ComposeV2Token("ABC12345", "secret-token-value"),
+			want:  "Bearer nbt_ABC12345.secret-token-value",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := AuthorizationHeaderValue(tc.token); got != tc.want {
+				t.Fatalf("AuthorizationHeaderValue() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestToNestedTagsIncludesSlug(t *testing.T) {
 	got := toNestedTags([]string{"claim override", "pool-default"})
 	gotRefs := make([]string, 0, len(got))

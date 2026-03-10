@@ -35,6 +35,7 @@ import (
 )
 
 const addressPartsCount = 2
+const v2TokenPrefix = "nbt_"
 
 type Client interface {
 	ResolvePrefixIDs(ctx context.Context, refs []ipamv1alpha1.NetBoxPrefixReference) ([]int32, error)
@@ -68,6 +69,17 @@ type APIClient struct {
 }
 
 const UserAgent = "cluster-api-ipam-provider-netbox/dev" // TODO: Dynamic version
+
+func AuthorizationHeaderValue(token string) string {
+	if strings.HasPrefix(token, v2TokenPrefix) && strings.Contains(token, ".") {
+		return "Bearer " + token
+	}
+	return "Token " + token
+}
+
+func ComposeV2Token(key, secret string) string {
+	return v2TokenPrefix + key + "." + secret
+}
 
 type netBoxListResponse[T any] struct {
 	Count   int `json:"count"`
@@ -470,7 +482,7 @@ func (c *APIClient) do(
 	if err != nil {
 		return fmt.Errorf("build %s %s request: %w", method, path, err)
 	}
-	httpReq.Header.Set("Authorization", "Token "+c.token)
+	httpReq.Header.Set("Authorization", AuthorizationHeaderValue(c.token))
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("User-Agent", UserAgent)
 	if request != nil {

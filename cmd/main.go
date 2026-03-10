@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/pflag"
@@ -65,11 +66,11 @@ type managerConfig struct {
 }
 
 func main() {
-	cfg := parseFlags()
-
-	goFlagSet := flag.CommandLine
-	pflag.CommandLine.AddGoFlagSet(goFlagSet)
-	pflag.Parse()
+	cfg, err := parseFlags(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	ctrl.SetLogger(klog.Background())
 	setupLog := ctrl.Log.WithName("setup")
@@ -111,7 +112,11 @@ func main() {
 	}
 }
 
-func parseFlags() managerConfig {
+func parseFlags(args []string) (managerConfig, error) {
+	return parseFlagsWithGoFlagSet(args, flag.CommandLine)
+}
+
+func parseFlagsWithGoFlagSet(args []string, goFlagSet *flag.FlagSet) (managerConfig, error) {
 	cfg := managerConfig{
 		metricsAddr:     defaultMetricsAddr,
 		probeAddr:       defaultProbeAddr,
@@ -120,23 +125,30 @@ func parseFlags() managerConfig {
 		managerOptions:  capiflags.ManagerOptions{},
 	}
 
-	capiflags.AddManagerOptions(pflag.CommandLine, &cfg.managerOptions)
-	flag.StringVar(
+	flagSet := pflag.NewFlagSet("manager", pflag.ContinueOnError)
+	flagSet.SetOutput(io.Discard)
+	capiflags.AddManagerOptions(flagSet, &cfg.managerOptions)
+	flagSet.AddGoFlagSet(goFlagSet)
+	flagSet.StringVar(
 		&cfg.metricsAddr,
 		"metrics-bind-address",
 		defaultMetricsAddr,
 		"Metrics bind address. Use 0 to disable.",
 	)
-	flag.StringVar(&cfg.probeAddr, "health-probe-bind-address", defaultProbeAddr, "Health probe bind address.")
-	flag.BoolVar(&cfg.enableLeaderElection, "leader-elect", false, "Enable leader election.")
-	flag.StringVar(&cfg.watchNamespace, "namespace", "", "Namespace to watch. Empty means all namespaces.")
-	flag.StringVar(&cfg.watchFilter, "watch-filter", "", "Cluster API watch filter label value.")
-	flag.StringVar(&cfg.webhookCertPath, "webhook-cert-path", "", "Webhook certificate directory.")
-	flag.StringVar(&cfg.webhookCertName, "webhook-cert-name", cfg.webhookCertName, "Webhook certificate file.")
-	flag.StringVar(&cfg.webhookCertKey, "webhook-cert-key", cfg.webhookCertKey, "Webhook private key file.")
-	flag.BoolVar(&cfg.enableHTTP2, "enable-http2", false, "Enable HTTP/2 for metrics and webhooks.")
+	flagSet.StringVar(&cfg.probeAddr, "health-probe-bind-address", defaultProbeAddr, "Health probe bind address.")
+	flagSet.BoolVar(&cfg.enableLeaderElection, "leader-elect", false, "Enable leader election.")
+	flagSet.StringVar(&cfg.watchNamespace, "namespace", "", "Namespace to watch. Empty means all namespaces.")
+	flagSet.StringVar(&cfg.watchFilter, "watch-filter", "", "Cluster API watch filter label value.")
+	flagSet.StringVar(&cfg.webhookCertPath, "webhook-cert-path", "", "Webhook certificate directory.")
+	flagSet.StringVar(&cfg.webhookCertName, "webhook-cert-name", cfg.webhookCertName, "Webhook certificate file.")
+	flagSet.StringVar(&cfg.webhookCertKey, "webhook-cert-key", cfg.webhookCertKey, "Webhook private key file.")
+	flagSet.BoolVar(&cfg.enableHTTP2, "enable-http2", false, "Enable HTTP/2 for metrics and webhooks.")
 
-	return cfg
+	if err := flagSet.Parse(args); err != nil {
+		return managerConfig{}, fmt.Errorf("parse flags: %w", err)
+	}
+
+	return cfg, nil
 }
 
 func newScheme() (*runtime.Scheme, error) {

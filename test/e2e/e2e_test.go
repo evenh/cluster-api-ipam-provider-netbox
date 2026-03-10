@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"text/template"
@@ -33,7 +35,8 @@ const (
 	defaultClaimUIDField   = "cluster_api_claim_uid"
 	defaultChainsawTimeout = 2 * time.Minute
 	netboxSuperuserToken   = "capi-netbox-e2e-token-0123456789abcdef"
-	netboxImage            = "netboxcommunity/netbox:v4.3-3.3.0"
+	netboxAPITokenPepper   = "cluster-api-ipam-provider-netbox-e2e-pepper-0123456789abcdef"
+	netboxImage            = "netboxcommunity/netbox:v4.5.4"
 	postgresImage          = "postgres:18-alpine"
 	valkeyImage            = "valkey/valkey:9-alpine"
 	netboxCustomFieldName  = defaultClaimUIDField
@@ -44,6 +47,9 @@ const (
 	managerStartupWait     = 5 * time.Second
 	resourceCleanupTimeout = 2 * time.Minute
 )
+
+var netboxAPITokenKeyPattern = regexp.MustCompile(`API Token: ([A-Za-z0-9]+)`)
+var errNetBoxAPITokenKeyNotFound = errors.New("NetBox v2 API token key not found in container logs")
 
 type scenario struct {
 	name                  string
@@ -253,6 +259,7 @@ type environment struct {
 	clusterName    string
 	netboxURL      string
 	netboxToken    string
+	netboxTokenRaw string
 	managerCmd     *exec.Cmd
 	managerOutput  bytes.Buffer
 	managerDone    chan error
@@ -276,7 +283,7 @@ func newE2EEnvironment(t *testing.T, ctx context.Context, projectDir string) *en
 		workDir:        workDir,
 		kubeconfigPath: filepath.Join(workDir, "kubeconfig"),
 		clusterName:    kindClusterName,
-		netboxToken:    netboxSuperuserToken,
+		netboxTokenRaw: netboxSuperuserToken,
 		managerDone:    make(chan error, 1),
 	}
 }
@@ -379,11 +386,12 @@ func (e *environment) startNetBox() error {
 			"REDIS_CACHE_HOST":    "valkey",
 			"REDIS_CACHE_PORT":    "6379",
 			"SECRET_KEY":          netboxSecretKey,
+			"API_TOKEN_PEPPER_1":  netboxAPITokenPepper,
 			"DB_WAIT_DEBUG":       "1",
 			"SUPERUSER_NAME":      "admin",
 			"SUPERUSER_EMAIL":     "admin@example.com",
 			"SUPERUSER_PASSWORD":  "admin",
-			"SUPERUSER_API_TOKEN": e.netboxToken,
+			"SUPERUSER_API_TOKEN": e.netboxTokenRaw,
 			"ALLOWED_HOSTS":       "*",
 		}),
 		testcontainers.WithWaitStrategyAndDeadline(10*time.Minute,
@@ -411,6 +419,10 @@ func (e *environment) startNetBox() error {
 		return fmt.Errorf("map netbox port: %w", err)
 	}
 	e.netboxURL = fmt.Sprintf("http://%s:%s", host, port.Port())
+	e.netboxToken, err = e.resolveNetBoxAPIToken(e.ctx)
+	if err != nil {
+		return err
+	}
 
 	client, err := newNetBoxAPIClient(e.netboxURL, e.netboxToken)
 	if err != nil {
@@ -419,6 +431,42 @@ func (e *environment) startNetBox() error {
 	e.netboxClient = client
 
 	return nil
+}
+
+func (e *environment) resolveNetBoxAPIToken(ctx context.Context) (string, error) {
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		key, err := e.netboxAPITokenKey(ctx)
+		if err == nil {
+			return nb.ComposeV2Token(key, e.netboxTokenRaw), nil
+		}
+		if !errors.Is(err, errNetBoxAPITokenKeyNotFound) {
+			return "", err
+		}
+		time.Sleep(time.Second)
+	}
+
+	return "", fmt.Errorf("resolve NetBox API token: %w", errNetBoxAPITokenKeyNotFound)
+}
+
+func (e *environment) netboxAPITokenKey(ctx context.Context) (string, error) {
+	logs, err := e.netboxContainer.Logs(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read NetBox container logs: %w", err)
+	}
+	defer logs.Close()
+
+	logData, err := io.ReadAll(logs)
+	if err != nil {
+		return "", fmt.Errorf("read NetBox container logs payload: %w", err)
+	}
+
+	matches := netboxAPITokenKeyPattern.FindAllStringSubmatch(string(logData), -1)
+	if len(matches) == 0 {
+		return "", errNetBoxAPITokenKeyNotFound
+	}
+
+	return matches[len(matches)-1][1], nil
 }
 
 func (e *environment) createKindCluster(ctx context.Context) error {
@@ -1011,7 +1059,7 @@ func (c *netBoxAdminClient) do(
 	if err != nil {
 		return fmt.Errorf("build %s %s request: %w", method, path, err)
 	}
-	httpReq.Header.Set("Authorization", "Token "+c.token)
+	httpReq.Header.Set("Authorization", nb.AuthorizationHeaderValue(c.token))
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("User-Agent", nb.UserAgent)
 	if request != nil {

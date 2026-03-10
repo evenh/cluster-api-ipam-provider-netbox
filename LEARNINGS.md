@@ -27,7 +27,9 @@
 - On controller-runtime `v0.23.x`, manager-scoped event recording should use `mgr.GetEventRecorder(...)` and `k8s.io/client-go/tools/events.EventRecorder`; `GetEventRecorderFor` is deprecated.
 - `sigs.k8s.io/cluster-api-ipam-provider-in-cluster v1.0.3` is not compatible with CAPI `v1.12.3`; it still imports removed `cluster-api` `v1beta1` packages.
 - All NetBox HTTP calls in this repo should set the shared custom `User-Agent` string from `internal/netbox.UserAgent`.
+- NetBox `v4.5.x` bootstrap creates only v2 API tokens; the e2e harness must set `API_TOKEN_PEPPER_1`, derive the token key from container logs, and use `Authorization: Bearer nbt_<key>.<secret>`. Runtime clients should accept both legacy v1 tokens and v2 `nbt_...` tokens.
 - In this sandbox, envtest cannot bind a local control-plane port (`listen tcp 127.0.0.1:0: bind: operation not permitted`), so controller and envtest suites require elevated execution to run here.
+- In `cmd/main.go`, controller manager flags must be parsed into the same config instance that is returned; registering flags against a local copy and parsing later silently ignores runtime overrides like `--health-probe-bind-address=0`.
 - Cluster API provider repositories still use `metadata.yaml` with `apiVersion: clusterctl.cluster.x-k8s.io/v1alpha3`; the release series should advertise the provider contract separately (`v1beta2` here).
 - NetBox `v4.3-3.3.0` serves `/api/` as unauthenticated `403 Forbidden`; the e2e readiness check should treat that as healthy rather than waiting for `200`.
 - NetBox bootstrap API tokens created via `SUPERUSER_API_TOKEN` must fit the backing `varchar(40)` limit.
