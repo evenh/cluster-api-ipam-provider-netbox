@@ -69,7 +69,7 @@ func main() {
 	cfg, err := parseFlags(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		os.Exit(2) //nolint:mnd // 2 is the conventional exit code for CLI usage errors.
 	}
 
 	ctrl.SetLogger(klog.Background())
