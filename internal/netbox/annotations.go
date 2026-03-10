@@ -28,16 +28,15 @@ import (
 )
 
 const (
-	AnnotationPrefix              = "ipam.netbox.cluster.x-k8s.io/"
-	AnnotationTenantID            = AnnotationPrefix + "tenant-id"
-	AnnotationVRFID               = AnnotationPrefix + "vrf-id"
-	AnnotationDNSName             = AnnotationPrefix + "dns-name"
-	AnnotationTags                = AnnotationPrefix + "tags"
-	AnnotationCustomFields        = AnnotationPrefix + "custom-fields"
-	DefaultOwnershipTag           = "cluster-api-ipam-provider-netbox"
-	DefaultClaimUIDCustomField    = "cluster_api_claim_uid"
-	DefaultIPAddressStatus        = "active"
-	ClaimUIDDescriptionFieldLabel = "claimUID"
+	AnnotationPrefix           = "ipam.netbox.cluster.x-k8s.io/"
+	AnnotationTenantID         = AnnotationPrefix + "tenant-id"
+	AnnotationVRFID            = AnnotationPrefix + "vrf-id"
+	AnnotationDNSName          = AnnotationPrefix + "dns-name"
+	AnnotationTags             = AnnotationPrefix + "tags"
+	AnnotationCustomFields     = AnnotationPrefix + "custom-fields"
+	DefaultOwnershipTag        = "cluster-api-ipam-provider-netbox"
+	DefaultClaimUIDCustomField = "cluster_api_claim_uid"
+	DefaultIPAddressStatus     = "active"
 )
 
 type EffectiveMetadata struct {
