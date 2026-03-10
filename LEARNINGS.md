@@ -5,6 +5,7 @@
 ### Repository workflow
 - `LEARNINGS.md` must be consulted before each meaningful step.
 - Only durable, reusable findings should be persisted here.
+- GitHub Actions in this repo should stay thin and delegate behavior to `Makefile` targets; CI formatting checks should use `make fmt-check` rather than mutating the tree with `make fmt`.
 
 ### Project decisions
 - The provider-specific pool APIs use `ipam.cluster.x-k8s.io/v1alpha1`.

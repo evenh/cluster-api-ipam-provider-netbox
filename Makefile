@@ -56,6 +56,15 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 fmt: ## Run go fmt against code.
 	go fmt ./...
 
+.PHONY: fmt-check
+fmt-check: ## Verify gofmt formatting without rewriting files.
+	@out="$$(gofmt -l $$(git ls-files -- '*.go'))"; \
+	if [ -n "$$out" ]; then \
+		echo "The following files need gofmt:"; \
+		echo "$$out"; \
+		exit 1; \
+	fi
+
 .PHONY: vet
 vet: ## Run go vet against code.
 	go vet ./...
