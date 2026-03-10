@@ -10,7 +10,7 @@
 ### Project decisions
 - The provider-specific pool APIs use `ipam.cluster.x-k8s.io/v1alpha1`.
 - Cluster API integration should target the latest Cluster API IPAM contract in use by the project.
-- The repository target remains Go `1.26`; Go `1.25.x` is only a temporary local toolchain override for Chainsaw-related tasks and should not be committed as the repo baseline.
+- The repository target is Go `1.25.8`; CI and local test flows that depend on Chainsaw compatibility should derive the toolchain from `go.mod`.
 - NetBox integration is implemented with repo-owned JSON clients; do not reintroduce `go-netbox` unless there is a concrete maintenance reason to accept generated-client coupling again.
 - Direct YAML imports in this repo should use `go.yaml.in/yaml/v4`; do not add new direct uses of the deprecated `gopkg.in/yaml.v3` module.
 - Shared controller plumbing in this repo should go through `pkg/reconcileutil.ControllerBase`; avoid duplicating `Client`/`Scheme`/`Recorder` fields or recorder helper methods per reconciler.
@@ -35,4 +35,4 @@
 - NetBox bootstrap API tokens created via `SUPERUSER_API_TOKEN` must fit the backing `varchar(40)` limit.
 - NetBox rejects unknown IP address custom field names in allocation payloads; any custom fields referenced by pool metadata or claim annotations must already exist in NetBox, so the e2e harness must seed them explicitly.
 - Chainsaw `v0.2.14` configuration requires `metadata.name`; `skip delete` behavior is controlled by the CLI `--skip-delete` flag rather than `spec.cleanup`.
-- The e2e harness runs successfully with the repo’s Go `1.26` baseline as long as `chainsaw` is already installed; the temporary Go `1.25.x` workaround is only needed for Chainsaw-specific tooling paths, not for executing the provider’s e2e suite.
+- Chainsaw compatibility in CI requires the repository baseline to stay on Go `1.25.8`; GitHub Actions should continue using `actions/setup-go` with `go-version-file: go.mod` so test jobs inherit that pin.

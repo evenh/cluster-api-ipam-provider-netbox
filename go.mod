@@ -1,6 +1,6 @@
 module github.com/evenh/cluster-api-ipam-provider-netbox
 
-go 1.26.0
+go 1.25.8
 
 require (
 	github.com/pkg/errors v0.9.1

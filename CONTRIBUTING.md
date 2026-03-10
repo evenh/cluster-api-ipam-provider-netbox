@@ -18,7 +18,7 @@
 
 ## Local Requirements
 
-- Go `1.26`
+- Go `1.25.8`
 - Docker
 - `kind`
 - `kubectl`
