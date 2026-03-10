@@ -6,6 +6,16 @@
 - Read [LEARNINGS.md](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/LEARNINGS.md) before making meaningful changes.
 - Persist durable, reusable findings back to `LEARNINGS.md`.
 
+## Repository Layout
+
+- [api](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/api): provider API types and CRD generation inputs
+- [cmd/main.go](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/cmd/main.go): manager entrypoint
+- [internal/controller](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/internal/controller): pool reconcilers and NetBox-specific claim handling
+- [internal/netbox](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/internal/netbox): repo-owned NetBox client and metadata logic
+- [pkg/ipamutil](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/pkg/ipamutil): generic Cluster API IPAM claim reconciliation
+- [pkg/reconcileutil](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/pkg/reconcileutil): shared controller plumbing
+- [test/e2e](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/test/e2e): live e2e harness and Chainsaw scenarios
+
 ## Local Requirements
 
 - Go `1.26`
@@ -54,7 +64,7 @@ go test -tags=e2e ./test/e2e -count=1 -v
 - Use the repo-owned client in `internal/netbox`.
 - Use `go.yaml.in/yaml/v4` for direct YAML parsing.
 - Use `mgr.GetEventRecorder(...)` and `k8s.io/client-go/tools/events.EventRecorder` for controller events.
-- Keep changes DRY. Shared controller plumbing belongs in reusable helpers instead of duplicated reconciler-local code.
+- Keep changes DRY. Shared controller plumbing belongs in `pkg/reconcileutil.ControllerBase` instead of duplicated reconciler-local code.
 
 ## Commits
 

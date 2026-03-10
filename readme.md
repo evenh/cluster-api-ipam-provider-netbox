@@ -1,69 +1,48 @@
 # Cluster API IPAM Provider for NetBox
 
-`cluster-api-ipam-provider-netbox` is a Cluster API IPAM provider that allocates and releases IP addresses from NetBox.
+`cluster-api-ipam-provider-netbox` connects Cluster API IP address claims to NetBox-backed address allocation.
 
-## Status
+It is intended for environments where NetBox is the source of truth for prefixes and allocated addresses, while Cluster API remains the source of truth for machine lifecycle.
 
-The provider currently supports:
+## What It Does
 
-- namespaced `NetBoxIPPool`
-- cluster-scoped `GlobalNetBoxIPPool`
-- NetBox prefix lookup by ID or CIDR
-- claim allocation and release through Cluster API `IPAddressClaim` and `IPAddress`
-- dual-stack capable NetBox-backed address allocation
-- live e2e verification with NetBox, Postgres, Valkey, kind, and Chainsaw
+- allocates addresses for Cluster API `IPAddressClaim` objects
+- creates matching Cluster API `IPAddress` objects
+- releases addresses in NetBox when claims are deleted
+- supports both namespaced and cluster-scoped pools
+- resolves NetBox prefixes by ID or by CIDR
+- supports IPv4 and IPv6 allocation flows
 
-The provider-specific CRDs are published under `ipam.cluster.x-k8s.io/v1alpha1`.
+The provider-specific APIs are published under `ipam.cluster.x-k8s.io/v1alpha1`.
 
-## Repository Layout
+## Pool Types
 
-- [api](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/api): provider API types and CRD generation inputs
-- [cmd/main.go](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/cmd/main.go): manager entrypoint
-- [internal/controller](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/internal/controller): pool reconcilers and NetBox claim adapter
-- [internal/netbox](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/internal/netbox): repo-owned NetBox client
-- [pkg/ipamutil](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/pkg/ipamutil): generic Cluster API IPAM claim reconciliation logic
-- [test/e2e](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/test/e2e): testcontainers + Chainsaw e2e suite
+- `NetBoxIPPool`: namespaced pool configuration
+- `GlobalNetBoxIPPool`: cluster-scoped pool configuration
 
-## Prerequisites
+Both pool types allow you to point claims at one or more NetBox prefixes and provide shared metadata defaults for allocated addresses.
 
-- Go `1.26`
-- Docker
-- `kind`
-- `kubectl`
-- `golangci-lint`
+## Installation Artifacts
 
-The e2e suite uses a hardcoded kind context name: `kind-netbox-ipam-e2e`.
-
-## Common Commands
-
-```bash
-make manifests
-make generate
-make test
-go test -tags=e2e ./test/e2e -count=1 -v
-golangci-lint run
-```
-
-## Development Notes
-
-- Consult [LEARNINGS.md](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/LEARNINGS.md) before making meaningful changes.
-- Use the repo-owned NetBox client in `internal/netbox`; do not add generated NetBox clients back in without a concrete reason.
-- Direct YAML imports should use `go.yaml.in/yaml/v4`.
-- Controller event recording should use `mgr.GetEventRecorder(...)` and `k8s.io/client-go/tools/events.EventRecorder`.
-
-## Installation
-
-Generate install artifacts:
+Build the install manifests with:
 
 ```bash
 make build-installer
 ```
 
-The generated provider manifests are written to:
+Generated artifacts:
 
-- [dist/ipam-components.yaml](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/dist/ipam-components.yaml)
-- [dist/metadata.yaml](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/dist/metadata.yaml)
+- [ipam-components.yaml](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/dist/ipam-components.yaml)
+- [metadata.yaml](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/dist/metadata.yaml)
+
+## Project Status
+
+The repository includes:
+
+- unit and envtest-backed controller tests
+- live e2e tests using NetBox, Postgres, Valkey, kind, and Chainsaw
+- a repo-owned NetBox client rather than generated client bindings
 
 ## Contributing
 
-See [CONTRIBUTING.md](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/CONTRIBUTING.md).
+For local setup, test commands, development workflow, and repository conventions, see [CONTRIBUTING.md](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/CONTRIBUTING.md).
