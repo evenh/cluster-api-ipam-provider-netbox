@@ -20,6 +20,7 @@
 - `kubebuilder` successfully writes scaffold files before failing on dependency resolution, so it can still be used as a file generator if dependency updates are handled separately.
 - `controller-gen paths=./...` will also traverse temporary nested scaffold modules under the repo root and can fail on their unrelated module state; generation commands should target the real package trees or those temp dirs should be removed intentionally.
 - The repository pins `controller-gen` to `v0.20.1`; generated CRDs and RBAC should be emitted with `bin/controller-gen`, not an older globally installed binary.
+- Upgrading this repo from controller-runtime `v0.22.x` to `v0.23.x` does not require source changes for the `v0.23.0` release-note breakages, because the project does not currently use controller-runtime event recorders or webhook validator/defaulting interfaces.
 - `sigs.k8s.io/cluster-api-ipam-provider-in-cluster v1.0.3` is not compatible with CAPI `v1.12.3`; it still imports removed `cluster-api` `v1beta1` packages.
 - All NetBox HTTP calls in this repo should set the shared custom `User-Agent` string from `internal/netbox.UserAgent`.
 - In this sandbox, envtest cannot bind a local control-plane port (`listen tcp 127.0.0.1:0: bind: operation not permitted`), so controller and envtest suites require elevated execution to run here.
