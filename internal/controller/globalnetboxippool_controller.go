@@ -19,22 +19,17 @@ package controller
 import (
 	"context"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/events"
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	ipamv1alpha1 "github.com/evenh/cluster-api-ipam-provider-netbox/api/v1alpha1"
+	"github.com/evenh/cluster-api-ipam-provider-netbox/pkg/reconcileutil"
 )
 
 // GlobalNetBoxIPPoolReconciler reconciles a GlobalNetBoxIPPool object.
 type GlobalNetBoxIPPoolReconciler struct {
-	client.Client
-
-	Scheme   *runtime.Scheme
-	Recorder events.EventRecorder
+	reconcileutil.ControllerBase
 }
 
 // +kubebuilder:rbac:groups=ipam.cluster.x-k8s.io,resources=globalnetboxippools,verbs=get;list;watch;create;update;patch;delete
@@ -49,7 +44,7 @@ func (r *GlobalNetBoxIPPoolReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
 		return ctrl.Result{}, ignoreNotFound(err)
 	}
-	if err := reconcilePoolStatus(ctx, r.Client, r.Recorder, pool, ipamv1alpha1.GlobalNetBoxIPPoolKind); err != nil {
+	if err := reconcilePoolStatus(ctx, r.Client, r, pool, ipamv1alpha1.GlobalNetBoxIPPoolKind); err != nil {
 		logger.Error(err, "reconcile global pool")
 		return ctrl.Result{}, err
 	}

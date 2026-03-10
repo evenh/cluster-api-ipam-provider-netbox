@@ -21,10 +21,8 @@ import (
 	"fmt"
 	"strconv"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/events"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,6 +30,7 @@ import (
 
 	ipamv1alpha1 "github.com/evenh/cluster-api-ipam-provider-netbox/api/v1alpha1"
 	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/index"
+	"github.com/evenh/cluster-api-ipam-provider-netbox/pkg/reconcileutil"
 )
 
 const (
@@ -48,7 +47,7 @@ type statusPool interface {
 func reconcilePoolStatus(
 	ctx context.Context,
 	c client.Client,
-	recorder events.EventRecorder,
+	recorder reconcileutil.EventRecorder,
 	pool statusPool,
 	kind string,
 ) error {
@@ -78,14 +77,14 @@ func reconcilePoolStatus(
 		return nil
 	}
 	if len(addresses) > 0 {
-		recordPoolEvent(
-			recorder,
-			pool,
-			corev1.EventTypeWarning,
-			reasonPoolInUse,
-			"BlockPoolDeletion",
-			fmt.Sprintf("Pool deletion is blocked while %d IPAddresses are still allocated", len(addresses)),
-		)
+		if recorder != nil {
+			recorder.RecordWarning(
+				pool,
+				reasonPoolInUse,
+				"BlockPoolDeletion",
+				fmt.Sprintf("Pool deletion is blocked while %d IPAddresses are still allocated", len(addresses)),
+			)
+		}
 		return fmt.Errorf("pool still has %d allocated IPAddresses", len(addresses))
 	}
 	controllerutil.RemoveFinalizer(pool, poolFinalizer)
@@ -142,16 +141,4 @@ func safeAllocatedCount(count int) (int32, error) {
 	}
 
 	return int32(value), nil
-}
-
-func recordPoolEvent(
-	recorder events.EventRecorder,
-	pool client.Object,
-	eventType, reason, action, message string,
-) {
-	if recorder == nil || pool == nil {
-		return
-	}
-
-	recorder.Eventf(pool, nil, eventType, reason, action, message)
 }

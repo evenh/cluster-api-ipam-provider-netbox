@@ -43,6 +43,7 @@ import (
 	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/controller"
 	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/index"
 	ipamutil "github.com/evenh/cluster-api-ipam-provider-netbox/pkg/ipamutil"
+	"github.com/evenh/cluster-api-ipam-provider-netbox/pkg/reconcileutil"
 )
 
 const (
@@ -206,9 +207,11 @@ func newManagerOptions(
 
 func setupControllers(ctx context.Context, mgr ctrl.Manager, watchFilter string) error {
 	if err := (&ipamutil.ClaimReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorder("ipaddressclaim"),
+		ControllerBase: reconcileutil.ControllerBase{
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorder("ipaddressclaim"),
+		},
 		WatchFilterValue: watchFilter,
 		Adapter:          &controller.NetBoxProviderAdapter{},
 	}).SetupWithManager(ctx, mgr); err != nil {
@@ -216,17 +219,21 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, watchFilter string)
 	}
 
 	if err := (&controller.NetBoxIPPoolReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("netboxippool"),
+		ControllerBase: reconcileutil.ControllerBase{
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorder("netboxippool"),
+		},
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("create NetBoxIPPool reconciler: %w", err)
 	}
 
 	if err := (&controller.GlobalNetBoxIPPoolReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("globalnetboxippool"),
+		ControllerBase: reconcileutil.ControllerBase{
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorder("globalnetboxippool"),
+		},
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("create GlobalNetBoxIPPool reconciler: %w", err)
 	}

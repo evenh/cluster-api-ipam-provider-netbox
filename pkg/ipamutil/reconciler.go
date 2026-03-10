@@ -23,13 +23,10 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/tools/events"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
 	clusterutil "sigs.k8s.io/cluster-api/util"
@@ -44,6 +41,8 @@ import (
 	ctrlhandler "sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	"github.com/evenh/cluster-api-ipam-provider-netbox/pkg/reconcileutil"
 )
 
 const (
@@ -56,10 +55,7 @@ const (
 )
 
 type ClaimReconciler struct {
-	client.Client
-
-	Scheme   *runtime.Scheme
-	Recorder events.EventRecorder
+	reconcileutil.ControllerBase
 
 	WatchFilterValue string
 	Adapter          ProviderAdapter
@@ -260,8 +256,7 @@ func (r *ClaimReconciler) reconcileClaimAddress(
 	)
 	claim.Status.AddressRef = ipamv1.IPAddressReference{Name: address.Name}
 	if !hadAddressRef && address.Spec.Address != "" {
-		recordClaimEvent(
-			r.Recorder,
+		r.RecordNormal(
 			claim,
 			reasonAddressAllocated,
 			"AllocateAddress",
@@ -311,8 +306,7 @@ func (r *ClaimReconciler) reconcileDelete(
 		if err := r.Client.Delete(ctx, address); err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
-		recordClaimEvent(
-			r.Recorder,
+		r.RecordNormal(
 			claim,
 			reasonAddressReleased,
 			"ReleaseAddress",
@@ -359,16 +353,4 @@ func unwrapResult(result *ctrl.Result) ctrl.Result {
 		return ctrl.Result{}
 	}
 	return *result
-}
-
-func recordClaimEvent(
-	recorder events.EventRecorder,
-	claim *ipamv1.IPAddressClaim,
-	reason, action, message string,
-) {
-	if recorder == nil || claim == nil {
-		return
-	}
-
-	recorder.Eventf(claim, nil, corev1.EventTypeNormal, reason, action, message)
 }

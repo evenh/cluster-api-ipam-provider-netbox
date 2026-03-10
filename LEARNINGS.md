@@ -12,6 +12,7 @@
 - The repository target remains Go `1.26`; Go `1.25.x` is only a temporary local toolchain override for Chainsaw-related tasks and should not be committed as the repo baseline.
 - NetBox integration is implemented with repo-owned JSON clients; do not reintroduce `go-netbox` unless there is a concrete maintenance reason to accept generated-client coupling again.
 - Direct YAML imports in this repo should use `go.yaml.in/yaml/v4`; do not add new direct uses of the deprecated `gopkg.in/yaml.v3` module.
+- Shared controller plumbing in this repo should go through `pkg/reconcileutil.ControllerBase`; avoid duplicating `Client`/`Scheme`/`Recorder` fields or recorder helper methods per reconciler.
 - Pool CRDs expose an optional `spec.clusterName`; the pool reconciler mirrors it into the standard `cluster.x-k8s.io/cluster-name` label so pools can participate in `clusterctl move`.
 
 ### Confirmed environment facts

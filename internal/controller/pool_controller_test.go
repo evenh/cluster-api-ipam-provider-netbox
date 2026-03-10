@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
@@ -18,6 +17,7 @@ import (
 
 	ipamv1alpha1 "github.com/evenh/cluster-api-ipam-provider-netbox/api/v1alpha1"
 	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/index"
+	"github.com/evenh/cluster-api-ipam-provider-netbox/pkg/reconcileutil"
 )
 
 func TestReconcilePoolStatus(t *testing.T) {
@@ -142,7 +142,8 @@ func TestReconcilePoolStatus(t *testing.T) {
 			Build()
 
 		recorder := events.NewFakeRecorder(1)
-		err := reconcilePoolStatus(ctx, k8sClient, recorder, pool, ipamv1alpha1.NetBoxIPPoolKind)
+		base := reconcileutil.ControllerBase{Recorder: recorder}
+		err := reconcilePoolStatus(ctx, k8sClient, base, pool, ipamv1alpha1.NetBoxIPPoolKind)
 		if err == nil || !strings.Contains(err.Error(), "still has 1 allocated IPAddresses") {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -150,7 +151,7 @@ func TestReconcilePoolStatus(t *testing.T) {
 			t.Fatalf("expected finalizer to remain, got %#v", pool.Finalizers)
 		}
 		event := <-recorder.Events
-		if !strings.Contains(event, corev1.EventTypeWarning) || !strings.Contains(event, reasonPoolInUse) {
+		if !strings.Contains(event, "Warning") || !strings.Contains(event, reasonPoolInUse) {
 			t.Fatalf("unexpected event: %q", event)
 		}
 	})
