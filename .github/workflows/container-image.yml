@@ -59,7 +59,7 @@ jobs:
         run: make build-installer IMG=ghcr.io/evenh/cluster-api-ipam-provider-netbox:latest
 
       - name: Upload manifests artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ipam-components
           path: |
