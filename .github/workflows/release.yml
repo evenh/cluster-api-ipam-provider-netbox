@@ -36,6 +36,7 @@ jobs:
     name: Build and push image
     needs: extract-meta
     permissions:
+      contents: read
       packages: write
     uses: ./.github/workflows/build-image.yml
     with:

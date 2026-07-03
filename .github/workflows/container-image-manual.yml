@@ -30,6 +30,7 @@ jobs:
     name: Build and push image
     needs: sanitize-tag
     permissions:
+      contents: read
       packages: write
     uses: ./.github/workflows/build-image.yml
     with:
