@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
@@ -38,6 +39,7 @@ type NetBoxIPPoolReconciler struct {
 
 	WatchFilterValue string
 	NewClient        func(nb.ConnectionConfig) (nb.Client, error)
+	RequestTimeout   time.Duration
 }
 
 // +kubebuilder:rbac:groups=ipam.cluster.x-k8s.io,resources=netboxippools,verbs=get;list;watch;create;update;patch;delete
@@ -69,7 +71,15 @@ func (r *NetBoxIPPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		newClientFunc = nb.NewClient
 	}
 
-	if err = reconcilePoolStatus(ctx, r.Client, r, newClientFunc, pool, ipamv1alpha1.NetBoxIPPoolKind); err != nil {
+	if err = reconcilePoolStatus(
+		ctx,
+		r.Client,
+		r,
+		newClientFunc,
+		r.RequestTimeout,
+		pool,
+		ipamv1alpha1.NetBoxIPPoolKind,
+	); err != nil {
 		logger.Error(err, "reconcile pool")
 		return ctrl.Result{}, err
 	}

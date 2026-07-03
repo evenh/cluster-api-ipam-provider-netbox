@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,6 +56,7 @@ func reconcilePoolStatus(
 	c client.Client,
 	recorder reconcileutil.EventRecorder,
 	newClientFunc func(nb.ConnectionConfig) (nb.Client, error),
+	requestTimeout time.Duration,
 	pool statusPool,
 	kind string,
 ) error {
@@ -78,7 +80,7 @@ func reconcilePoolStatus(
 	// events would just move the N+1 NetBox call problem here from the claim controller.
 	var resolveErr error
 	if len(status.ResolvedPrefixes) == 0 || previousObservedGeneration != pool.GetGeneration() {
-		resolveErr = resolvePoolPrefixes(ctx, c, newClientFunc, pool)
+		resolveErr = resolvePoolPrefixes(ctx, c, newClientFunc, requestTimeout, pool)
 	}
 	setPoolReadyCondition(pool, resolveErr)
 	ensureClusterNameLabel(pool, pool.PoolSpec().ClusterName)
@@ -111,6 +113,7 @@ func resolvePoolPrefixes(
 	ctx context.Context,
 	c client.Client,
 	newClientFunc func(nb.ConnectionConfig) (nb.Client, error),
+	requestTimeout time.Duration,
 	pool statusPool,
 ) error {
 	logger := ctrl.LoggerFrom(ctx)
@@ -121,6 +124,7 @@ func resolvePoolPrefixes(
 		logger.Error(err, "load NetBox connection config failed")
 		return nb.SanitizedError(err)
 	}
+	cfg.RequestTimeout = requestTimeout
 	netboxClient, err := newClientFunc(cfg)
 	if err != nil {
 		logger.Error(err, "create NetBox client failed")

@@ -41,15 +41,17 @@ const poolExhaustedRequeueAfter = 15 * time.Second
 const missingAddressRequeueAfter = 5 * time.Second
 
 type NetBoxProviderAdapter struct {
-	NewClient func(nb.ConnectionConfig) (nb.Client, error)
+	NewClient      func(nb.ConnectionConfig) (nb.Client, error)
+	RequestTimeout time.Duration
 }
 
 type netboxClaimHandler struct {
 	client.Client
 
-	claim         *ipamv1.IPAddressClaim
-	pool          statusPool
-	newClientFunc func(nb.ConnectionConfig) (nb.Client, error)
+	claim          *ipamv1.IPAddressClaim
+	pool           statusPool
+	newClientFunc  func(nb.ConnectionConfig) (nb.Client, error)
+	requestTimeout time.Duration
 }
 
 var _ ipamutil.ProviderAdapter = &NetBoxProviderAdapter{}
@@ -88,9 +90,10 @@ func (a *NetBoxProviderAdapter) ClaimHandlerFor(c client.Client, claim *ipamv1.I
 		newClientFunc = nb.NewClient
 	}
 	return &netboxClaimHandler{
-		Client:        c,
-		claim:         claim,
-		newClientFunc: newClientFunc,
+		Client:         c,
+		claim:          claim,
+		newClientFunc:  newClientFunc,
+		requestTimeout: a.RequestTimeout,
 	}
 }
 
@@ -139,6 +142,7 @@ func (h *netboxClaimHandler) EnsureAddress(
 	if err != nil {
 		return nil, err
 	}
+	cfg.RequestTimeout = h.requestTimeout
 	netboxClient, err := h.newClientFunc(cfg)
 	if err != nil {
 		return nil, err
@@ -232,6 +236,7 @@ func (h *netboxClaimHandler) ReleaseAddress(ctx context.Context) (_ *ctrl.Result
 	if err != nil {
 		return nil, err
 	}
+	cfg.RequestTimeout = h.requestTimeout
 	netboxClient, err := h.newClientFunc(cfg)
 	if err != nil {
 		return nil, err

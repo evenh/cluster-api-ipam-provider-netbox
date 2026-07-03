@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/spf13/pflag"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -43,6 +44,7 @@ import (
 	ipamv1alpha1 "github.com/evenh/cluster-api-ipam-provider-netbox/api/v1alpha1"
 	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/controller"
 	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/index"
+	nb "github.com/evenh/cluster-api-ipam-provider-netbox/internal/netbox"
 	ipamutil "github.com/evenh/cluster-api-ipam-provider-netbox/pkg/ipamutil"
 	"github.com/evenh/cluster-api-ipam-provider-netbox/pkg/reconcileutil"
 )
@@ -62,6 +64,7 @@ type managerConfig struct {
 	watchNamespace       string
 	watchFilter          string
 	enableHTTP2          bool
+	netboxRequestTimeout time.Duration
 	managerOptions       capiflags.ManagerOptions
 }
 
@@ -96,7 +99,7 @@ func main() {
 		setupLog.Error(err, "Failed to set up indexes")
 		os.Exit(1)
 	}
-	if err = setupControllers(ctx, mgr, cfg.watchFilter); err != nil {
+	if err = setupControllers(ctx, mgr, cfg.watchFilter, cfg.netboxRequestTimeout); err != nil {
 		setupLog.Error(err, "Failed to set up controllers")
 		os.Exit(1)
 	}
@@ -118,11 +121,12 @@ func parseFlags(args []string) (managerConfig, error) {
 
 func parseFlagsWithGoFlagSet(args []string, goFlagSet *flag.FlagSet) (managerConfig, error) {
 	cfg := managerConfig{
-		metricsAddr:     defaultMetricsAddr,
-		probeAddr:       defaultProbeAddr,
-		webhookCertName: "tls.crt",
-		webhookCertKey:  "tls.key",
-		managerOptions:  capiflags.ManagerOptions{},
+		metricsAddr:          defaultMetricsAddr,
+		probeAddr:            defaultProbeAddr,
+		webhookCertName:      "tls.crt",
+		webhookCertKey:       "tls.key",
+		netboxRequestTimeout: nb.DefaultRequestTimeout,
+		managerOptions:       capiflags.ManagerOptions{},
 	}
 
 	flagSet := pflag.NewFlagSet("manager", pflag.ContinueOnError)
@@ -143,9 +147,18 @@ func parseFlagsWithGoFlagSet(args []string, goFlagSet *flag.FlagSet) (managerCon
 	flagSet.StringVar(&cfg.webhookCertName, "webhook-cert-name", cfg.webhookCertName, "Webhook certificate file.")
 	flagSet.StringVar(&cfg.webhookCertKey, "webhook-cert-key", cfg.webhookCertKey, "Webhook private key file.")
 	flagSet.BoolVar(&cfg.enableHTTP2, "enable-http2", false, "Enable HTTP/2 for metrics and webhooks.")
+	flagSet.DurationVar(
+		&cfg.netboxRequestTimeout,
+		"netbox-request-timeout",
+		nb.DefaultRequestTimeout,
+		"Timeout for individual NetBox API requests.",
+	)
 
 	if err := flagSet.Parse(args); err != nil {
 		return managerConfig{}, fmt.Errorf("parse flags: %w", err)
+	}
+	if cfg.netboxRequestTimeout <= 0 {
+		return managerConfig{}, fmt.Errorf("netbox-request-timeout must be positive, got %s", cfg.netboxRequestTimeout)
 	}
 
 	return cfg, nil
@@ -217,7 +230,12 @@ func newManagerOptions(
 	return options
 }
 
-func setupControllers(ctx context.Context, mgr ctrl.Manager, watchFilter string) error {
+func setupControllers(
+	ctx context.Context,
+	mgr ctrl.Manager,
+	watchFilter string,
+	netboxRequestTimeout time.Duration,
+) error {
 	if err := (&ipamutil.ClaimReconciler{
 		ControllerBase: reconcileutil.ControllerBase{
 			Client:   mgr.GetClient(),
@@ -225,7 +243,7 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, watchFilter string)
 			Recorder: mgr.GetEventRecorder("ipaddressclaim"),
 		},
 		WatchFilterValue: watchFilter,
-		Adapter:          &controller.NetBoxProviderAdapter{},
+		Adapter:          &controller.NetBoxProviderAdapter{RequestTimeout: netboxRequestTimeout},
 	}).SetupWithManager(ctx, mgr); err != nil {
 		return fmt.Errorf("create IPAddressClaim reconciler: %w", err)
 	}
@@ -237,6 +255,7 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, watchFilter string)
 			Recorder: mgr.GetEventRecorder("netboxippool"),
 		},
 		WatchFilterValue: watchFilter,
+		RequestTimeout:   netboxRequestTimeout,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("create NetBoxIPPool reconciler: %w", err)
 	}
@@ -248,6 +267,7 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, watchFilter string)
 			Recorder: mgr.GetEventRecorder("globalnetboxippool"),
 		},
 		WatchFilterValue: watchFilter,
+		RequestTimeout:   netboxRequestTimeout,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("create GlobalNetBoxIPPool reconciler: %w", err)
 	}

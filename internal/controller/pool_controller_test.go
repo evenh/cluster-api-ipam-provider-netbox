@@ -118,6 +118,7 @@ func testReconcilePoolStatusUpdatesAllocatedCount(ctx context.Context, t *testin
 		k8sClient,
 		nil,
 		stubNewClient,
+		time.Second,
 		pool,
 		ipamv1alpha1.NetBoxIPPoolKind,
 	); err != nil {
@@ -176,6 +177,7 @@ func testReconcilePoolStatusSkipsUnchangedGeneration(ctx context.Context, t *tes
 		k8sClient,
 		nil,
 		newClientFunc,
+		time.Second,
 		pool,
 		ipamv1alpha1.NetBoxIPPoolKind,
 	); err != nil {
@@ -208,7 +210,7 @@ func testReconcilePoolStatusReportsPrefixResolutionFailure(ctx context.Context, 
 		return &fakeNetBoxClient{resolveErr: errNetBoxUnreachable}, nil
 	}
 
-	err := reconcilePoolStatus(ctx, k8sClient, nil, newClientFunc, pool, ipamv1alpha1.NetBoxIPPoolKind)
+	err := reconcilePoolStatus(ctx, k8sClient, nil, newClientFunc, time.Second, pool, ipamv1alpha1.NetBoxIPPoolKind)
 	if err == nil {
 		t.Fatal("expected reconcilePoolStatus() to return the resolution error")
 	}
@@ -250,6 +252,7 @@ func testReconcilePoolStatusPreservesMoveLabel(ctx context.Context, t *testing.T
 		k8sClient,
 		nil,
 		stubNewClient,
+		time.Second,
 		pool,
 		ipamv1alpha1.NetBoxIPPoolKind,
 	); err != nil {
@@ -294,7 +297,7 @@ func testReconcilePoolStatusBlocksFinalizerRemoval(ctx context.Context, t *testi
 
 	recorder := events.NewFakeRecorder(1)
 	base := reconcileutil.ControllerBase{Recorder: recorder}
-	err := reconcilePoolStatus(ctx, k8sClient, base, stubNewClient, pool, ipamv1alpha1.NetBoxIPPoolKind)
+	err := reconcilePoolStatus(ctx, k8sClient, base, stubNewClient, time.Second, pool, ipamv1alpha1.NetBoxIPPoolKind)
 	if err == nil || !strings.Contains(err.Error(), "still has 1 allocated IPAddresses") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -337,6 +340,7 @@ func testReconcilePoolStatusRemovesFinalizer(ctx context.Context, t *testing.T, 
 		k8sClient,
 		nil,
 		stubNewClient,
+		time.Second,
 		pool,
 		ipamv1alpha1.NetBoxIPPoolKind,
 	); err != nil {

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
@@ -38,6 +39,7 @@ type GlobalNetBoxIPPoolReconciler struct {
 
 	WatchFilterValue string
 	NewClient        func(nb.ConnectionConfig) (nb.Client, error)
+	RequestTimeout   time.Duration
 }
 
 // +kubebuilder:rbac:groups=ipam.cluster.x-k8s.io,resources=globalnetboxippools,verbs=get;list;watch;create;update;patch;delete
@@ -74,6 +76,7 @@ func (r *GlobalNetBoxIPPoolReconciler) Reconcile(ctx context.Context, req ctrl.R
 		r.Client,
 		r,
 		newClientFunc,
+		r.RequestTimeout,
 		pool,
 		ipamv1alpha1.GlobalNetBoxIPPoolKind,
 	); err != nil {

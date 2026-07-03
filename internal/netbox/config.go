@@ -38,7 +38,9 @@ const (
 	SecretKeyToken              = "token"
 	SecretKeyInsecureSkipVerify = "insecureSkipVerify"
 	SecretKeyCABundle           = "caBundle"
-	httpClientTimeout           = 30 * time.Second
+
+	// DefaultRequestTimeout is used whenever ConnectionConfig.RequestTimeout is left unset.
+	DefaultRequestTimeout = 30 * time.Second
 )
 
 type ConnectionConfig struct {
@@ -46,6 +48,8 @@ type ConnectionConfig struct {
 	Token              string
 	InsecureSkipVerify bool
 	CABundle           []byte
+	// RequestTimeout bounds every individual NetBox HTTP request. Zero means DefaultRequestTimeout.
+	RequestTimeout time.Duration
 }
 
 func LoadConnectionConfig(
@@ -115,9 +119,14 @@ func NewHTTPClient(cfg ConnectionConfig) (*http.Client, error) {
 		transport.TLSClientConfig.RootCAs = pool
 	}
 
+	timeout := cfg.RequestTimeout
+	if timeout <= 0 {
+		timeout = DefaultRequestTimeout
+	}
+
 	return &http.Client{
 		Transport: transport,
-		Timeout:   httpClientTimeout,
+		Timeout:   timeout,
 	}, nil
 }
 
