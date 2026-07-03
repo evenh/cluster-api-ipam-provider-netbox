@@ -2,23 +2,23 @@
 
 ## Before You Start
 
-- Read [AGENTS.md](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/AGENTS.md).
-- Read [LEARNINGS.md](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/LEARNINGS.md) before making meaningful changes.
+- Read [AGENTS.md](AGENTS.md).
+- Read [LEARNINGS.md](LEARNINGS.md) before making meaningful changes.
 - Persist durable, reusable findings back to `LEARNINGS.md`.
 
 ## Repository Layout
 
-- [api](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/api): provider API types and CRD generation inputs
-- [cmd/main.go](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/cmd/main.go): manager entrypoint
-- [internal/controller](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/internal/controller): pool reconcilers and NetBox-specific claim handling
-- [internal/netbox](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/internal/netbox): repo-owned NetBox client and metadata logic
-- [pkg/ipamutil](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/pkg/ipamutil): generic Cluster API IPAM claim reconciliation
-- [pkg/reconcileutil](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/pkg/reconcileutil): shared controller plumbing
-- [test/e2e](/Users/evenholthe/projects/evenh/cluster-api-ipam-provider-netbox/test/e2e): live e2e harness and Chainsaw scenarios
+- [api](api): provider API types and CRD generation inputs
+- [cmd/main.go](cmd/main.go): manager entrypoint
+- [internal/controller](internal/controller): pool reconcilers and NetBox-specific claim handling
+- [internal/netbox](internal/netbox): repo-owned NetBox client and metadata logic
+- [pkg/ipamutil](pkg/ipamutil): generic Cluster API IPAM claim reconciliation
+- [pkg/reconcileutil](pkg/reconcileutil): shared controller plumbing
+- [test/e2e](test/e2e): live e2e harness and Chainsaw scenarios
 
 ## Local Requirements
 
-- Go `1.25.8`
+- Go `1.26.4`
 - Docker
 - `kind`
 - `kubectl`
@@ -36,7 +36,7 @@ make manifests
 2. Run lint:
 
 ```bash
-golangci-lint run
+make lint
 ```
 
 3. Run unit, integration, and envtest-backed suites:
@@ -48,14 +48,17 @@ make test
 4. Run the live e2e suite when changing reconciliation, NetBox integration, manifests, or lifecycle behavior:
 
 ```bash
-go test -tags=e2e ./test/e2e -count=1 -v
+make test-e2e
 ```
+
+To iterate on the e2e suite without re-provisioning NetBox and kind on every run, use `make e2e-up` once, then `make e2e-test-reuse` repeatedly, then `make e2e-down` when done.
 
 ## E2E Notes
 
 - The e2e suite creates and uses a hardcoded kind context: `kind-netbox-ipam-e2e`.
 - NetBox is started with testcontainers together with Postgres and Valkey.
-- The e2e suite is intentionally slow because it bootstraps a full live NetBox stack and a management cluster.
+- The e2e suite is intentionally slow because it bootstraps a full live NetBox stack and a management cluster; use `make e2e-up`/`make e2e-test-reuse` (see above) when iterating.
+- Chainsaw runs as a `go.mod` tool dependency (`go tool chainsaw`), not a separately downloaded binary.
 
 ## Coding Expectations
 
