@@ -1,0 +1,73 @@
+name: Release
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  extract-meta:
+    name: Extract image metadata
+    runs-on: ubuntu-latest
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/evenh/cluster-api-ipam-provider-netbox
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+  build-image:
+    name: Build and push image
+    needs: extract-meta
+    permissions:
+      packages: write
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image_tags: ${{ needs.extract-meta.outputs.tags }}
+      labels: ${{ needs.extract-meta.outputs.labels }}
+
+  draft-release:
+    name: Draft release
+    needs: [extract-meta, build-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build installer manifest
+        run: |
+          make build-installer \
+            IMG=ghcr.io/evenh/cluster-api-ipam-provider-netbox:${{ needs.extract-meta.outputs.version }}
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/ipam-components.yaml
+            dist/metadata.yaml

@@ -1,0 +1,36 @@
+name: 'Manual: Build Container Image'
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Custom tag for the image. Empty = auto-generated tag'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  sanitize-tag:
+    name: Sanitize tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.sanitize.outputs.tag }}
+    steps:
+      - name: Sanitize tag
+        id: sanitize
+        run: |
+          RAW_TAG="${{ inputs.tag != '' && inputs.tag || format('{0}-{1}', github.ref_name, github.sha) }}"
+          SANITIZED=$(echo "$RAW_TAG" | tr "/" "-")
+          echo "tag=$SANITIZED" >> "$GITHUB_OUTPUT"
+
+  build-image:
+    name: Build and push image
+    needs: sanitize-tag
+    permissions:
+      packages: write
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image_tags: ghcr.io/evenh/cluster-api-ipam-provider-netbox:${{ needs.sanitize-tag.outputs.tag }}

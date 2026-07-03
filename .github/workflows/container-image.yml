@@ -1,0 +1,67 @@
+name: Build Container Image
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  extract-meta:
+    name: Extract image metadata
+    runs-on: ubuntu-latest
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/evenh/cluster-api-ipam-provider-netbox
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+  build-image:
+    name: Build and push image
+    needs: extract-meta
+    permissions:
+      packages: write
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image_tags: ${{ needs.extract-meta.outputs.tags }}
+      labels: ${{ needs.extract-meta.outputs.labels }}
+
+  manifests:
+    name: Build installer manifests
+    needs: build-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build installer manifest
+        run: make build-installer IMG=ghcr.io/evenh/cluster-api-ipam-provider-netbox:latest
+
+      - name: Upload manifests artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipam-components
+          path: |
+            dist/ipam-components.yaml
+            dist/metadata.yaml
