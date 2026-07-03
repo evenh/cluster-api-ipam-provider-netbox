@@ -11,6 +11,11 @@ on:
         description: 'Optional newline-separated list of OCI labels'
         required: false
         type: string
+      version:
+        description: 'Version string embedded into the manager binary'
+        required: false
+        default: 'dev'
+        type: string
 
 jobs:
   build-image:
@@ -41,5 +46,7 @@ jobs:
           push: true
           tags: ${{ inputs.image_tags }}
           labels: ${{ inputs.labels }}
+          build-args: |
+            VERSION=${{ inputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

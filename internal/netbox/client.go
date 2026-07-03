@@ -32,6 +32,7 @@ import (
 	"unicode"
 
 	ipamv1alpha1 "github.com/evenh/cluster-api-ipam-provider-netbox/api/v1alpha1"
+	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/version"
 )
 
 const addressPartsCount = 2
@@ -68,8 +69,6 @@ type APIClient struct {
 	token      string
 	httpClient *http.Client
 }
-
-const UserAgent = "cluster-api-ipam-provider-netbox/dev" // TODO: Dynamic version
 
 func AuthorizationHeaderValue(token string) string {
 	if strings.HasPrefix(token, v2TokenPrefix) && strings.Contains(token, ".") {
@@ -521,7 +520,7 @@ func (c *APIClient) do(
 	}
 	httpReq.Header.Set("Authorization", AuthorizationHeaderValue(c.token))
 	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set("User-Agent", UserAgent)
+	httpReq.Header.Set("User-Agent", version.UserAgent())
 	if request != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}

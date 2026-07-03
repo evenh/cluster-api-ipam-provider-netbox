@@ -38,3 +38,4 @@ jobs:
     uses: ./.github/workflows/build-image.yml
     with:
       image_tags: ghcr.io/evenh/cluster-api-ipam-provider-netbox:${{ needs.sanitize-tag.outputs.tag }}
+      version: ${{ needs.sanitize-tag.outputs.tag }}

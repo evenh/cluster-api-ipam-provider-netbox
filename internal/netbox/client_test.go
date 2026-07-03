@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	ipamv1alpha1 "github.com/evenh/cluster-api-ipam-provider-netbox/api/v1alpha1"
+	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/version"
 )
 
 func TestSanitizedErrorStripsNetBoxResponseBody(t *testing.T) {
@@ -129,8 +130,8 @@ func TestAllocateIPAddressEnsuresTags(t *testing.T) {
 		t.Fatalf("unexpected allocation requests: %#v", allocateRequests)
 	}
 	for i, agent := range userAgents {
-		if agent != UserAgent {
-			t.Fatalf("request %d user-agent = %q, want %q", i, agent, UserAgent)
+		if agent != version.UserAgent() {
+			t.Fatalf("request %d user-agent = %q, want %q", i, agent, version.UserAgent())
 		}
 	}
 
@@ -175,8 +176,8 @@ func TestResolvePrefixIDs(t *testing.T) {
 			if r.Method != http.MethodGet || r.URL.Path != "/api/ipam/prefixes/" {
 				return jsonResponse(r, http.StatusNotFound, map[string]any{"detail": "not found"}), nil
 			}
-			if got := r.Header.Get("User-Agent"); got != UserAgent {
-				t.Fatalf("user-agent = %q, want %q", got, UserAgent)
+			if got := r.Header.Get("User-Agent"); got != version.UserAgent() {
+				t.Fatalf("user-agent = %q, want %q", got, version.UserAgent())
 			}
 			if r.URL.Query().Get("prefix") != "10.20.0.0/24" {
 				t.Fatalf("unexpected prefix query: %q", r.URL.RawQuery)
@@ -213,8 +214,8 @@ func TestEnsureIPAddressCustomField(t *testing.T) {
 			if r.Method != http.MethodGet || r.URL.Path != "/api/extras/custom-fields/" {
 				return jsonResponse(r, http.StatusNotFound, map[string]any{"detail": "not found"}), nil
 			}
-			if got := r.Header.Get("User-Agent"); got != UserAgent {
-				t.Fatalf("user-agent = %q, want %q", got, UserAgent)
+			if got := r.Header.Get("User-Agent"); got != version.UserAgent() {
+				t.Fatalf("user-agent = %q, want %q", got, version.UserAgent())
 			}
 			if r.URL.Query().Get("name") != DefaultClaimUIDCustomField ||
 				r.URL.Query().Get("object_type") != "ipam.ipaddress" {

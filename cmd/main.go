@@ -30,7 +30,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/pkg/version"
 	"k8s.io/klog/v2"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
@@ -45,6 +44,7 @@ import (
 	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/controller"
 	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/index"
 	nb "github.com/evenh/cluster-api-ipam-provider-netbox/internal/netbox"
+	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/version"
 	ipamutil "github.com/evenh/cluster-api-ipam-provider-netbox/pkg/ipamutil"
 	"github.com/evenh/cluster-api-ipam-provider-netbox/pkg/reconcileutil"
 )
@@ -108,7 +108,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("Starting manager", "version", version.Get().String())
+	setupLog.Info("Starting manager", "version", version.Get())
 	if err = mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)

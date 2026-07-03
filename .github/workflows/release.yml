@@ -42,6 +42,7 @@ jobs:
     with:
       image_tags: ${{ needs.extract-meta.outputs.tags }}
       labels: ${{ needs.extract-meta.outputs.labels }}
+      version: ${{ github.ref_name }}
 
   draft-release:
     name: Draft release

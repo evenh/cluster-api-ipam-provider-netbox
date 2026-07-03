@@ -41,6 +41,7 @@ jobs:
     with:
       image_tags: ${{ needs.extract-meta.outputs.tags }}
       labels: ${{ needs.extract-meta.outputs.labels }}
+      version: sha-${{ github.sha }}
 
   manifests:
     name: Build installer manifests

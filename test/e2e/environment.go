@@ -26,6 +26,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	nb "github.com/evenh/cluster-api-ipam-provider-netbox/internal/netbox"
+	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/version"
 )
 
 const (
@@ -981,7 +982,7 @@ func (c *netBoxAdminClient) do(
 	}
 	httpReq.Header.Set("Authorization", nb.AuthorizationHeaderValue(c.token))
 	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set("User-Agent", nb.UserAgent)
+	httpReq.Header.Set("User-Agent", version.UserAgent())
 	if request != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
