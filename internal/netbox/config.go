@@ -98,6 +98,10 @@ func LoadConnectionConfig(
 
 func NewHTTPClient(cfg ConnectionConfig) (*http.Client, error) {
 	transport := &http.Transport{
+		// Proxy honors HTTP_PROXY, HTTPS_PROXY, and NO_PROXY (and their lowercase forms) from the
+		// manager process environment. Unlike http.DefaultTransport, a Transport literal defaults
+		// Proxy to nil, so this must be set explicitly or proxy env vars are silently ignored.
+		Proxy: http.ProxyFromEnvironment,
 		TLSClientConfig: &tls.Config{
 			//nolint:gosec // The secret explicitly controls whether certificate verification is skipped.
 			InsecureSkipVerify: cfg.InsecureSkipVerify,

@@ -65,6 +65,16 @@ spec:
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager
+        # TODO(user): Uncomment and set if NetBox is only reachable through an egress proxy.
+        # HTTP_PROXY/HTTPS_PROXY/NO_PROXY apply to all NetBox connections; they are not
+        # per-pool settings, so they belong here rather than in a connectionSecretRef Secret.
+        # env:
+        # - name: HTTP_PROXY
+        #   value: "http://proxy.example.com:3128"
+        # - name: HTTPS_PROXY
+        #   value: "http://proxy.example.com:3128"
+        # - name: NO_PROXY
+        #   value: ".cluster.local,.svc,10.0.0.0/8"
         ports: []
         securityContext:
           readOnlyRootFilesystem: true

@@ -2,6 +2,7 @@ package netbox
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -115,6 +116,25 @@ func TestLoadConnectionConfig(t *testing.T) {
 			ipamv1alpha1.NamespacedSecretReference{Name: "netbox"},
 		); err == nil {
 			t.Fatal("expected error when token is missing")
+		}
+	})
+}
+
+func TestNewHTTPClient(t *testing.T) {
+	t.Run("wires proxy support from the process environment", func(t *testing.T) {
+		client, err := NewHTTPClient(ConnectionConfig{})
+		if err != nil {
+			t.Fatalf("NewHTTPClient() error = %v", err)
+		}
+		transport, ok := client.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("expected *http.Transport, got %T", client.Transport)
+		}
+		if transport.Proxy == nil {
+			t.Fatal(
+				"Proxy is nil: HTTP_PROXY/HTTPS_PROXY/NO_PROXY would be silently ignored " +
+					"(a bare &http.Transport{} literal does not default Proxy the way http.DefaultTransport does)",
+			)
 		}
 	})
 }
