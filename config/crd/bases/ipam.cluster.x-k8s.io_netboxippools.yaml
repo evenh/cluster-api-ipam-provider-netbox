@@ -24,7 +24,11 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: NetBoxIPPool is the Schema for the netboxippools API.
+        description: |-
+          NetBoxIPPool is a namespaced pool of NetBox-managed IP addresses. It allocates addresses from one
+          or more pre-existing NetBox prefixes and creates a NetBox IP address record for each accepted
+          IPAddressClaim; it never creates the underlying prefixes. Use GlobalNetBoxIPPool instead when the
+          pool must be shared across namespaces.
         properties:
           apiVersion:
             description: |-
@@ -48,17 +52,23 @@ spec:
               pool types.
             properties:
               claimUIDCustomField:
-                description: ClaimUIDCustomField is the NetBox custom field used to
-                  store the Kubernetes IPAddressClaim UID.
+                default: cluster_api_claim_uid
+                description: |-
+                  ClaimUIDCustomField is the NetBox custom field used to store the Kubernetes IPAddressClaim UID.
+                  This field must already exist in NetBox as a text custom field on the ipam.ipaddress object type;
+                  the provider checks for it but does not create it.
+                minLength: 1
                 type: string
               clusterName:
                 description: |-
                   ClusterName associates the pool with a Cluster API Cluster for clusterctl move. When set, the
                   controller mirrors it to the standard cluster.x-k8s.io/cluster-name label on the pool.
+                maxLength: 63
+                pattern: ^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$
                 type: string
               connectionSecretRef:
                 description: ConnectionSecretRef points at the Secret that contains
-                  the NetBox URL, token, and optional TLS settings.
+                  the NetBox connection details.
                 properties:
                   name:
                     description: Name is the Secret name.
@@ -66,15 +76,23 @@ spec:
                     type: string
                   namespace:
                     description: |-
-                      Namespace is the Secret namespace. For namespaced pools this should normally be omitted so the
-                      pool namespace is used. Global pools should set it explicitly because they are cluster-scoped.
+                      Namespace is the Secret namespace. For namespaced pools this must be left empty; the pool's
+                      own namespace is always used, so a namespaced pool cannot read a Secret from another namespace.
+                      Global pools are cluster-scoped and must set this explicitly.
                     type: string
                 required:
                 - name
                 type: object
               ipAddressStatus:
+                default: active
                 description: IPAddressStatus is the NetBox status assigned to newly
                   allocated IP addresses.
+                enum:
+                - active
+                - reserved
+                - deprecated
+                - dhcp
+                - slaac
                 type: string
               metadataDefaults:
                 description: MetadataDefaults defines the default NetBox fields applied
@@ -83,8 +101,9 @@ spec:
                   customFields:
                     additionalProperties:
                       type: string
-                    description: CustomFields maps NetBox custom field names to string
-                      values.
+                    description: |-
+                      CustomFields maps NetBox custom field names to string values. Each field must already exist in
+                      NetBox on the ipam.ipaddress object type. Claim annotations can add to or override these values.
                     type: object
                   dnsName:
                     description: DNSName sets the DNS name stored on the allocated
@@ -109,20 +128,26 @@ spec:
                     type: integer
                 type: object
               ownershipTag:
-                description: OwnershipTag is added to every allocated NetBox IP address
-                  so the provider can find and clean it up later.
+                default: cluster-api-ipam-provider-netbox
+                description: |-
+                  OwnershipTag is added to every allocated NetBox IP address so the provider can find and clean it up
+                  later. The tag is created in NetBox automatically if it does not already exist.
+                minLength: 1
                 type: string
               prefixes:
                 description: |-
-                  Prefixes lists the candidate NetBox prefixes to allocate from. Prefixes are tried in order until
-                  an address is allocated or all options are exhausted.
+                  Prefixes lists the candidate NetBox prefixes to allocate from. Each prefix must already exist in
+                  NetBox; the provider only resolves and allocates from them, it never creates prefixes. Prefixes
+                  are tried in order until an address is allocated or all options are exhausted.
                 items:
                   description: NetBoxPrefixReference identifies a NetBox prefix by
                     ID or CIDR.
                   properties:
                     cidr:
-                      description: CIDR is the prefix in CIDR notation. The provider
-                        resolves it to a unique NetBox prefix before allocation.
+                      description: |-
+                        CIDR is the prefix in CIDR notation. The provider resolves it to a unique, already-existing
+                        NetBox prefix before allocation; it does not create the prefix.
+                      maxLength: 43
                       minLength: 1
                       type: string
                     id:
@@ -143,6 +168,9 @@ spec:
                     rule: has(self.id) != has(self.cidr)
                   - message: vrfID can only be set when cidr is used
                     rule: '!has(self.vrfID) || has(self.cidr)'
+                  - message: cidr must include a prefix length, e.g. 10.0.0.0/24
+                    rule: '!has(self.cidr) || self.cidr.contains(''/'')'
+                maxItems: 32
                 minItems: 1
                 type: array
             required:
@@ -242,6 +270,11 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: connectionSecretRef.namespace must not be set on a namespaced NetBoxIPPool;
+            the pool's own namespace is always used
+          rule: '!has(self.spec.connectionSecretRef.namespace) || self.spec.connectionSecretRef.namespace
+            == ""'
     served: true
     storage: true
     subresources:

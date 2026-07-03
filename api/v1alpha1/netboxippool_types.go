@@ -25,8 +25,12 @@ import (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Allocated",type="integer",JSONPath=".status.addresses.allocated"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.connectionSecretRef.namespace) || self.spec.connectionSecretRef.namespace == \"\"",message="connectionSecretRef.namespace must not be set on a namespaced NetBoxIPPool; the pool's own namespace is always used"
 
-// NetBoxIPPool is the Schema for the netboxippools API.
+// NetBoxIPPool is a namespaced pool of NetBox-managed IP addresses. It allocates addresses from one
+// or more pre-existing NetBox prefixes and creates a NetBox IP address record for each accepted
+// IPAddressClaim; it never creates the underlying prefixes. Use GlobalNetBoxIPPool instead when the
+// pool must be shared across namespaces.
 type NetBoxIPPool struct {
 	metav1.TypeMeta `json:",inline"`
 

@@ -1,5 +1,7 @@
 ## Append samples of your project ##
 resources:
+- netbox-credentials-secret.yaml
 - ipam_v1alpha1_netboxippool.yaml
 - ipam_v1alpha1_globalnetboxippool.yaml
+- ipam_v1beta2_ipaddressclaim.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

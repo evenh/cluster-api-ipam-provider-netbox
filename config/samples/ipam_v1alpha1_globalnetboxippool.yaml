@@ -1,3 +1,9 @@
+# GlobalNetBoxIPPool is cluster-scoped: IPAddressClaims in any namespace can reference it. Because
+# it has no owning namespace, connectionSecretRef.namespace must be set explicitly (namespaced
+# NetBoxIPPool must NOT set it: the pool's own namespace is always used there).
+#
+# Same NetBox preconditions as NetBoxIPPool: the prefix and the "cluster_api_claim_uid" custom
+# field must already exist in NetBox.
 apiVersion: ipam.cluster.x-k8s.io/v1alpha1
 kind: GlobalNetBoxIPPool
 metadata:
@@ -6,4 +12,14 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: globalnetboxippool-sample
 spec:
-  # TODO(user): Add fields here
+  connectionSecretRef:
+    name: netbox-credentials
+    namespace: default
+  prefixes:
+    - cidr: 10.1.0.0/16
+  metadataDefaults:
+    dnsName: shared.example.com
+    tags:
+      - kubernetes
+      - shared-pool
+  ipAddressStatus: reserved

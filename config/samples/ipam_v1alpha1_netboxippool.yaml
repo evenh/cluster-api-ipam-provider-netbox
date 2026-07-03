@@ -1,3 +1,9 @@
+# NetBoxIPPool is namespaced: only IPAddressClaims in this same namespace can reference it.
+#
+# Before applying: the NetBox prefix below must already exist, and the "cluster_api_claim_uid"
+# custom field must already exist in NetBox as a text field on the IPAM > IP Address object type
+# (Customization > Custom Fields). The provider allocates addresses from the prefix and creates
+# tags on demand, but it does not create prefixes or custom field definitions.
 apiVersion: ipam.cluster.x-k8s.io/v1alpha1
 kind: NetBoxIPPool
 metadata:
@@ -5,5 +11,25 @@ metadata:
     app.kubernetes.io/name: cluster-api-ipam-provider-netbox
     app.kubernetes.io/managed-by: kustomize
   name: netboxippool-sample
+  namespace: default
 spec:
-  # TODO(user): Add fields here
+  # ClusterName is optional; set it to mirror the cluster.x-k8s.io/cluster-name label onto this
+  # pool so it moves along with the Cluster during a clusterctl move.
+  clusterName: my-cluster
+  connectionSecretRef:
+    name: netbox-credentials
+  prefixes:
+    # Reference a prefix by CIDR (resolved to a NetBox prefix ID at allocation time) ...
+    - cidr: 10.0.0.0/24
+    # ... or by NetBox prefix ID directly, if you already know it. Prefixes are tried in order
+    # until an address is allocated.
+    # - id: 42
+  metadataDefaults:
+    dnsName: cluster.example.com
+    tags:
+      - kubernetes
+    customFields:
+      environment: production
+  # ownershipTag, claimUIDCustomField, and ipAddressStatus all have sensible defaults
+  # ("cluster-api-ipam-provider-netbox", "cluster_api_claim_uid", "active") and only need to be
+  # set to override them, e.g. to run multiple providers against the same NetBox instance.

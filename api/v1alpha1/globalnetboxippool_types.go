@@ -27,7 +27,10 @@ import (
 // +kubebuilder:printcolumn:name="Allocated",type="integer",JSONPath=".status.addresses.allocated"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// GlobalNetBoxIPPool is the Schema for the globalnetboxippools API.
+// GlobalNetBoxIPPool is a cluster-scoped pool of NetBox-managed IP addresses, usable by
+// IPAddressClaims in any namespace. Otherwise it behaves exactly like NetBoxIPPool: addresses are
+// allocated from pre-existing NetBox prefixes, and it never creates the underlying prefixes.
+// Because it has no owning namespace, connectionSecretRef.namespace must be set explicitly.
 type GlobalNetBoxIPPool struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

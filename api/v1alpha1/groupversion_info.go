@@ -15,6 +15,32 @@ limitations under the License.
 */
 
 // Package v1alpha1 contains API Schema definitions for the ipam v1alpha1 API group.
+//
+// # Two pool kinds
+//
+// NetBoxIPPool is namespaced: it can only be referenced by IPAddressClaims in its own namespace.
+// GlobalNetBoxIPPool is cluster-scoped: it can be referenced by IPAddressClaims in any namespace, and
+// must set connectionSecretRef.namespace explicitly since it has no owning namespace of its own.
+// Both allocate from pre-existing NetBox prefixes and never create the prefixes themselves.
+//
+// # What the provider writes to NetBox versus what it expects to already exist
+//
+// The provider creates and deletes a NetBox IP address record for each accepted/deleted
+// IPAddressClaim, and creates missing NetBox tags (including OwnershipTag) on demand. It does not
+// create NetBox prefixes or the ClaimUIDCustomField custom field definition; both must already exist
+// in NetBox before a pool can allocate addresses.
+//
+// # Claim-level overrides
+//
+// A claim can override NetBoxIPPoolSpec.MetadataDefaults for its own allocation using annotations on
+// the IPAddressClaim, all under the "ipam.netbox.cluster.x-k8s.io/" prefix:
+//
+//   - tenant-id: overrides MetadataDefaults.TenantID (integer)
+//   - vrf-id: overrides MetadataDefaults.VRFID (integer)
+//   - dns-name: overrides MetadataDefaults.DNSName
+//   - tags: overrides MetadataDefaults.Tags (comma-separated)
+//   - custom-fields: merges into MetadataDefaults.CustomFields (JSON object of string values)
+//
 // +kubebuilder:object:generate=true
 // +groupName=ipam.cluster.x-k8s.io
 package v1alpha1

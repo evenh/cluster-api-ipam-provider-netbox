@@ -1,0 +1,20 @@
+# IPAddressClaim is a Cluster API core type (ipam.cluster.x-k8s.io/v1beta2), not defined by this
+# provider - shown here to illustrate the claim-level override annotations this provider reads.
+# Any of these annotations may be omitted; each overrides (or, for custom-fields, merges into) the
+# referenced pool's spec.metadataDefaults for this claim only.
+apiVersion: ipam.cluster.x-k8s.io/v1beta2
+kind: IPAddressClaim
+metadata:
+  name: ipaddressclaim-sample
+  namespace: default
+  annotations:
+    ipam.netbox.cluster.x-k8s.io/dns-name: "node-1.cluster.example.com"
+    ipam.netbox.cluster.x-k8s.io/tags: "node,claim-override"
+    ipam.netbox.cluster.x-k8s.io/custom-fields: '{"owner":"team-a"}'
+    # ipam.netbox.cluster.x-k8s.io/tenant-id: "5"
+    # ipam.netbox.cluster.x-k8s.io/vrf-id: "3"
+spec:
+  poolRef:
+    apiGroup: ipam.cluster.x-k8s.io
+    kind: NetBoxIPPool
+    name: netboxippool-sample
