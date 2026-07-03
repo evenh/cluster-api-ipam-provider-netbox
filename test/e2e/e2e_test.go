@@ -1,5 +1,4 @@
 //go:build e2e
-// +build e2e
 
 package e2e
 
@@ -10,12 +9,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"text/template"
@@ -87,12 +89,12 @@ type netBoxPrefix struct {
 }
 
 type netBoxIPAddress struct {
-	ID           int32                  `json:"id"`
-	Address      string                 `json:"address"`
-	DNSName      string                 `json:"dns_name"`
-	Status       *netBoxStatus          `json:"status,omitempty"`
-	Tags         []netBoxTag            `json:"tags,omitempty"`
-	CustomFields map[string]interface{} `json:"custom_fields,omitempty"`
+	ID           int32          `json:"id"`
+	Address      string         `json:"address"`
+	DNSName      string         `json:"dns_name"`
+	Status       *netBoxStatus  `json:"status,omitempty"`
+	Tags         []netBoxTag    `json:"tags,omitempty"`
+	CustomFields map[string]any `json:"custom_fields,omitempty"`
 }
 
 type netBoxStatus struct {
@@ -104,6 +106,7 @@ type netBoxTag struct {
 	Slug string `json:"slug"`
 }
 
+//nolint:tparallel // scenarios share one kind cluster, NetBox instance, and manager process; run sequentially.
 func TestE2E(t *testing.T) {
 	t.Parallel()
 
@@ -111,32 +114,31 @@ func TestE2E(t *testing.T) {
 		t.Skip("skipping e2e in short mode")
 	}
 
-	projectDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
+	projectDir, setupErr := os.Getwd()
+	if setupErr != nil {
+		t.Fatalf("getwd: %v", setupErr)
 	}
-	projectDir, err = resolveProjectDir(projectDir)
-	if err != nil {
-		t.Fatalf("resolve project dir: %v", err)
+	projectDir, setupErr = resolveProjectDir(projectDir)
+	if setupErr != nil {
+		t.Fatalf("resolve project dir: %v", setupErr)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
-	env := newE2EEnvironment(t, ctx, projectDir)
+	env := newE2EEnvironment(ctx, t, projectDir)
 	defer env.Cleanup()
 
-	if err := env.Setup(); err != nil {
-		t.Fatalf("setup e2e environment: %v", err)
+	if setupErr = env.Setup(); setupErr != nil {
+		t.Fatalf("setup e2e environment: %v", setupErr)
 	}
 
-	namespacedPrefix, err := env.CreatePrefix(ctx, "10.203.1.0/24")
-	if err != nil {
-		t.Fatalf("create namespaced prefix: %v", err)
+	namespacedPrefix, setupErr := env.CreatePrefix(ctx, "10.203.1.0/24")
+	if setupErr != nil {
+		t.Fatalf("create namespaced prefix: %v", setupErr)
 	}
-	globalPrefix, err := env.CreatePrefix(ctx, "10.203.2.0/24")
-	if err != nil {
-		t.Fatalf("create global prefix: %v", err)
+	globalPrefix, setupErr := env.CreatePrefix(ctx, "10.203.2.0/24")
+	if setupErr != nil {
+		t.Fatalf("create global prefix: %v", setupErr)
 	}
 
 	scenarios := []scenario{
@@ -160,7 +162,7 @@ func TestE2E(t *testing.T) {
 				"namespace":   "e2e-namespaced",
 				"netboxURL":   env.NetBoxURL(),
 				"netboxToken": env.NetBoxToken(),
-				"prefixID":    fmt.Sprintf("%d", namespacedPrefix.ID),
+				"prefixID":    strconv.Itoa(int(namespacedPrefix.ID)),
 			},
 		},
 		{
@@ -192,9 +194,9 @@ func TestE2E(t *testing.T) {
 	}
 
 	for _, scenario := range scenarios {
-		scenario := scenario
 		t.Run(scenario.name, func(t *testing.T) {
-			if err := env.RunChainsawScenario(ctx, scenario.dir, scenario.values); err != nil {
+			err := env.RunChainsawScenario(ctx, scenario.dir, scenario.values)
+			if err != nil {
 				t.Fatalf("run chainsaw scenario: %v", err)
 			}
 
@@ -213,37 +215,42 @@ func TestE2E(t *testing.T) {
 
 			env.AssertIPAddress(t, ipAddress, scenario)
 
-			if err := env.DeleteClaim(ctx, scenario.namespace, scenario.claimName); err != nil {
+			err = env.DeleteClaim(ctx, scenario.namespace, scenario.claimName)
+			if err != nil {
 				t.Fatalf("delete claim: %v\n%s", err, env.failureDetails(ctx))
 			}
-			if err := env.WaitForIPAddressDeleted(
+			err = env.WaitForIPAddressDeleted(
 				ctx,
 				defaultOwnershipTag,
 				defaultClaimUIDField,
 				claimUID,
 				resourceCleanupTimeout,
-			); err != nil {
+			)
+			if err != nil {
 				t.Fatalf("wait for NetBox IP deletion: %v\n%s", err, env.failureDetails(ctx))
 			}
-			if err := env.waitForResourceDeleted(
+			err = env.waitForResourceDeleted(
 				ctx,
 				scenario.namespace,
 				"ipaddressclaims.ipam.cluster.x-k8s.io",
 				scenario.claimName,
 				resourceCleanupTimeout,
-			); err != nil {
+			)
+			if err != nil {
 				t.Fatalf("wait for claim deletion: %v\n%s", err, env.failureDetails(ctx))
 			}
-			if err := env.waitForResourceDeleted(
+			err = env.waitForResourceDeleted(
 				ctx,
 				scenario.namespace,
 				"ipaddresses.ipam.cluster.x-k8s.io",
 				scenario.claimName,
 				resourceCleanupTimeout,
-			); err != nil {
+			)
+			if err != nil {
 				t.Fatalf("wait for address deletion: %v\n%s", err, env.failureDetails(ctx))
 			}
-			if err := env.CleanupScenario(ctx, scenario); err != nil {
+			err = env.CleanupScenario(ctx, scenario)
+			if err != nil {
 				t.Fatalf("cleanup scenario: %v\n%s", err, env.failureDetails(ctx))
 			}
 		})
@@ -271,7 +278,7 @@ type environment struct {
 	netboxContainer   testcontainers.Container
 }
 
-func newE2EEnvironment(t *testing.T, ctx context.Context, projectDir string) *environment {
+func newE2EEnvironment(ctx context.Context, t *testing.T, projectDir string) *environment {
 	t.Helper()
 
 	workDir := t.TempDir()
@@ -324,13 +331,13 @@ func (e *environment) Cleanup() {
 		_ = e.valkeyContainer.Terminate(e.ctx)
 	}
 	if e.postgresContainer != nil {
-		_ = (*e.postgresContainer).Terminate(e.ctx)
+		_ = e.postgresContainer.Terminate(e.ctx)
 	}
 	if e.dockerNetwork != nil {
 		_ = e.dockerNetwork.Remove(e.ctx)
 	}
 	if e.clusterName != "" {
-		_ = e.runCmd(e.ctx, e.projectDir, nil, "kind", "delete", "cluster", "--name", e.clusterName)
+		_ = e.runCmd(e.ctx, e.projectDir, "kind", "delete", "cluster", "--name", e.clusterName)
 	}
 }
 
@@ -418,7 +425,7 @@ func (e *environment) startNetBox() error {
 	if err != nil {
 		return fmt.Errorf("map netbox port: %w", err)
 	}
-	e.netboxURL = fmt.Sprintf("http://%s:%s", host, port.Port())
+	e.netboxURL = "http://" + net.JoinHostPort(host, port.Port())
 	e.netboxToken, err = e.resolveNetBoxAPIToken(e.ctx)
 	if err != nil {
 		return err
@@ -470,11 +477,10 @@ func (e *environment) netboxAPITokenKey(ctx context.Context) (string, error) {
 }
 
 func (e *environment) createKindCluster(ctx context.Context) error {
-	_ = e.runCmd(ctx, e.projectDir, nil, "kind", "delete", "cluster", "--name", e.clusterName)
+	_ = e.runCmd(ctx, e.projectDir, "kind", "delete", "cluster", "--name", e.clusterName)
 	return e.runCmd(
 		ctx,
 		e.projectDir,
-		nil,
 		"kind",
 		"create",
 		"cluster",
@@ -486,31 +492,15 @@ func (e *environment) createKindCluster(ctx context.Context) error {
 }
 
 func (e *environment) installCRDs(ctx context.Context) error {
+	capiModuleDir, err := clusterAPIModuleDir()
+	if err != nil {
+		return err
+	}
+
 	capiCRDs := []string{
-		filepath.Join(
-			goModCache(),
-			"sigs.k8s.io/cluster-api@v1.12.3",
-			"config",
-			"crd",
-			"bases",
-			"cluster.x-k8s.io_clusters.yaml",
-		),
-		filepath.Join(
-			goModCache(),
-			"sigs.k8s.io/cluster-api@v1.12.3",
-			"config",
-			"crd",
-			"bases",
-			"ipam.cluster.x-k8s.io_ipaddressclaims.yaml",
-		),
-		filepath.Join(
-			goModCache(),
-			"sigs.k8s.io/cluster-api@v1.12.3",
-			"config",
-			"crd",
-			"bases",
-			"ipam.cluster.x-k8s.io_ipaddresses.yaml",
-		),
+		filepath.Join(capiModuleDir, "config", "crd", "bases", "cluster.x-k8s.io_clusters.yaml"),
+		filepath.Join(capiModuleDir, "config", "crd", "bases", "ipam.cluster.x-k8s.io_ipaddressclaims.yaml"),
+		filepath.Join(capiModuleDir, "config", "crd", "bases", "ipam.cluster.x-k8s.io_ipaddresses.yaml"),
 	}
 
 	args := []string{"--kubeconfig", e.kubeconfigPath, "apply"}
@@ -518,7 +508,8 @@ func (e *environment) installCRDs(ctx context.Context) error {
 		args = append(args, "-f", crd)
 	}
 	args = append(args, "-f", filepath.Join(e.projectDir, "config", "crd", "bases"))
-	if err := e.runCmd(ctx, e.projectDir, nil, "kubectl", args...); err != nil {
+	err = e.runCmd(ctx, e.projectDir, "kubectl", args...)
+	if err != nil {
 		return err
 	}
 
@@ -529,11 +520,12 @@ func (e *environment) installCRDs(ctx context.Context) error {
 		"netboxippools.ipam.cluster.x-k8s.io",
 		"globalnetboxippools.ipam.cluster.x-k8s.io",
 	} {
-		if err := e.runCmd(ctx, e.projectDir, nil,
+		err = e.runCmd(ctx, e.projectDir,
 			"kubectl", "--kubeconfig", e.kubeconfigPath,
 			"wait", "--for=condition=Established", "--timeout=2m",
 			fmt.Sprintf("crd/%s", crdName),
-		); err != nil {
+		)
+		if err != nil {
 			return err
 		}
 	}
@@ -583,7 +575,8 @@ func (e *environment) RunChainsawScenario(ctx context.Context, scenarioDir strin
 	}
 
 	output, err := e.runCmdOutput(ctx, e.projectDir, []string{"KUBECONFIG=" + e.kubeconfigPath},
-		e.chainsawBinary(),
+		"go",
+		"tool", "chainsaw",
 		"test",
 		"--config", filepath.Join("test", "e2e", "chainsaw.yaml"),
 		"--kube-context", kindContextName,
@@ -597,7 +590,7 @@ func (e *environment) RunChainsawScenario(ctx context.Context, scenarioDir strin
 		select {
 		case managerErr := <-e.managerDone:
 			details.WriteString("\nmanager exited:\n")
-			details.WriteString(fmt.Sprintf("%v\n", managerErr))
+			fmt.Fprintf(&details, "%v\n", managerErr)
 		default:
 		}
 		if managerOutput := strings.TrimSpace(e.managerOutput.String()); managerOutput != "" {
@@ -673,7 +666,7 @@ func (e *environment) GetClaimUID(ctx context.Context, namespace, claimName stri
 }
 
 func (e *environment) CleanupScenario(ctx context.Context, scenario scenario) error {
-	if err := e.runCmd(ctx, e.projectDir, nil,
+	if err := e.runCmd(ctx, e.projectDir,
 		"kubectl",
 		"--kubeconfig", e.kubeconfigPath,
 		"delete", "namespace", scenario.namespace,
@@ -707,7 +700,7 @@ func (e *environment) CleanupScenario(ctx context.Context, scenario scenario) er
 				},
 				args[4:]...)
 		}
-		if err := e.runCmd(ctx, e.projectDir, nil, "kubectl", args...); err != nil {
+		if err := e.runCmd(ctx, e.projectDir, "kubectl", args...); err != nil {
 			return err
 		}
 	}
@@ -716,7 +709,7 @@ func (e *environment) CleanupScenario(ctx context.Context, scenario scenario) er
 }
 
 func (e *environment) DeleteClaim(ctx context.Context, namespace, name string) error {
-	return e.runCmd(ctx, e.projectDir, nil,
+	return e.runCmd(ctx, e.projectDir,
 		"kubectl",
 		"--kubeconfig", e.kubeconfigPath,
 		"-n", namespace,
@@ -821,13 +814,13 @@ func (e *environment) debugNetBoxState(ctx context.Context) string {
 
 	var out strings.Builder
 	for _, item := range result.Results {
-		out.WriteString(fmt.Sprintf("- id=%d address=%s dns=%s tags=%v customFields=%v\n",
+		fmt.Fprintf(&out, "- id=%d address=%s dns=%s tags=%v customFields=%v\n",
 			item.ID,
 			item.Address,
 			item.DNSName,
 			extractTagNames(item.Tags),
 			item.CustomFields,
-		))
+		)
 	}
 	return out.String()
 }
@@ -844,6 +837,7 @@ func (e *environment) CreatePrefix(ctx context.Context, cidr string) (*netBoxPre
 	return e.netboxClient.createPrefix(ctx, cidr)
 }
 
+//nolint:nilnil // nil, nil is this test helper's "not found" result; callers check the pointer.
 func (e *environment) FindIPAddressByClaimUID(
 	ctx context.Context,
 	ownershipTag, fieldName, claimUID string,
@@ -885,8 +879,8 @@ func (e *environment) ensureCustomField(ctx context.Context, fieldName string) e
 	return e.netboxClient.ensureCustomField(ctx, fieldName)
 }
 
-func (e *environment) runCmd(ctx context.Context, dir string, env []string, name string, args ...string) error {
-	output, err := e.runCmdOutput(ctx, dir, env, name, args...)
+func (e *environment) runCmd(ctx context.Context, dir string, name string, args ...string) error {
+	output, err := e.runCmdOutput(ctx, dir, nil, name, args...)
 	if err == nil {
 		return nil
 	}
@@ -939,6 +933,18 @@ func goModCache() string {
 	return strings.TrimSpace(string(output))
 }
 
+func clusterAPIModuleDir() (string, error) {
+	output, err := exec.Command(
+		"go", "list", "-m", "-f", "{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}",
+		"sigs.k8s.io/cluster-api",
+	).Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve sigs.k8s.io/cluster-api module version: %w", err)
+	}
+	version := strings.TrimSpace(string(output))
+	return filepath.Join(goModCache(), "sigs.k8s.io/cluster-api@"+version), nil
+}
+
 func resolveProjectDir(start string) (string, error) {
 	dir := start
 	for {
@@ -960,25 +966,17 @@ func renderValues(values map[string]string) string {
 	for _, key := range keys {
 		if value, ok := values[key]; ok {
 			if key == "prefixID" {
-				builder.WriteString(fmt.Sprintf("%s: %s\n", key, value))
+				fmt.Fprintf(&builder, "%s: %s\n", key, value)
 				continue
 			}
-			builder.WriteString(fmt.Sprintf("%s: %q\n", key, value))
+			fmt.Fprintf(&builder, "%s: %q\n", key, value)
 		}
 	}
 	return builder.String()
 }
 
-func (e *environment) chainsawBinary() string {
-	path := filepath.Join(e.projectDir, "bin", "chainsaw")
-	if _, err := os.Stat(path); err == nil {
-		return path
-	}
-	return "chainsaw"
-}
-
 func (c *netBoxAdminClient) createPrefix(ctx context.Context, cidr string) (*netBoxPrefix, error) {
-	request := map[string]interface{}{
+	request := map[string]any{
 		"prefix": cidr,
 		"status": "active",
 	}
@@ -1005,7 +1003,7 @@ func (c *netBoxAdminClient) ensureCustomField(ctx context.Context, fieldName str
 	query.Set("name", fieldName)
 	query.Set("object_type", "ipam.ipaddress")
 
-	var result netBoxListResponse[map[string]interface{}]
+	var result netBoxListResponse[map[string]any]
 	if err := c.do(ctx, http.MethodGet, "/api/extras/custom-fields/", query, nil, &result, http.StatusOK); err != nil {
 		return fmt.Errorf("list custom fields: %w", err)
 	}
@@ -1013,7 +1011,7 @@ func (c *netBoxAdminClient) ensureCustomField(ctx context.Context, fieldName str
 		return nil
 	}
 
-	request := map[string]interface{}{
+	request := map[string]any{
 		"object_types": []string{"ipam.ipaddress"},
 		"type":         "text",
 		"name":         fieldName,
@@ -1037,8 +1035,8 @@ func (c *netBoxAdminClient) do(
 	ctx context.Context,
 	method, path string,
 	query url.Values,
-	request interface{},
-	response interface{},
+	request any,
+	response any,
 	expectedStatus ...int,
 ) error {
 	var body io.Reader
@@ -1082,19 +1080,15 @@ func (c *netBoxAdminClient) do(
 	if response == nil || len(respBody) == 0 {
 		return nil
 	}
-	if err := json.Unmarshal(respBody, response); err != nil {
+	err = json.Unmarshal(respBody, response)
+	if err != nil {
 		return fmt.Errorf("decode %s %s response: %w", method, path, err)
 	}
 	return nil
 }
 
 func containsStatus(statuses []int, status int) bool {
-	for _, candidate := range statuses {
-		if candidate == status {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(statuses, status)
 }
 
 var _ = template.Must

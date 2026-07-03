@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // +kubebuilder:object:root=true
@@ -61,5 +62,8 @@ func (p *GlobalNetBoxIPPool) PoolStatus() *NetBoxIPPoolStatus {
 }
 
 func init() {
-	SchemeBuilder.Register(&GlobalNetBoxIPPool{}, &GlobalNetBoxIPPoolList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &GlobalNetBoxIPPool{}, &GlobalNetBoxIPPoolList{})
+		return nil
+	})
 }

@@ -468,7 +468,7 @@ func newControllerTestScheme(t *testing.T) *runtime.Scheme {
 }
 
 func int32Ptr(v int32) *int32 {
-	return &v
+	return new(v)
 }
 
 var _ nb.Client = (*fakeNetBoxClient)(nil)
