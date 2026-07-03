@@ -74,8 +74,20 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 .PHONY: test-e2e
-test-e2e: manifests generate fmt vet ## Run the e2e tests.
+test-e2e: manifests generate fmt vet ## Run the e2e tests against a throwaway environment.
 	go test -tags=e2e ./test/e2e -count=1 -v
+
+.PHONY: e2e-up
+e2e-up: manifests generate ## Provision a long-lived e2e environment (NetBox + kind) to debug against.
+	go run -tags=e2e ./test/e2e/cmd/e2eup
+
+.PHONY: e2e-down
+e2e-down: ## Tear down the environment provisioned by e2e-up.
+	go run -tags=e2e ./test/e2e/cmd/e2edown
+
+.PHONY: e2e-test-reuse
+e2e-test-reuse: ## Run the e2e tests against the environment provisioned by e2e-up.
+	E2E_REUSE=1 go test -tags=e2e ./test/e2e -run TestE2E -count=1 -v
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

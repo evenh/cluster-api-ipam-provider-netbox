@@ -299,3 +299,19 @@ linters:
       - path: 'internal/controller/ipaddressclaim_controller\.go|internal/netbox/client\.go'
         linters:
           - nilnil
+      - path: 'test/e2e/(environment|state|teardown)\.go|test/e2e/cmd/'
+        linters:
+          - bodyclose
+          - cyclop
+          - dupl
+          - errcheck
+          - funlen
+          - goconst
+          - gocognit
+          - gosec
+          - noctx
+          - testpackage
+          - wrapcheck
+      - path: 'test/e2e/cmd/'
+        linters:
+          - forbidigo
