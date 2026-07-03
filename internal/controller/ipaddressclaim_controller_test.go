@@ -130,139 +130,274 @@ func TestEnsureAddress(t *testing.T) {
 	}
 
 	t.Run("allocates address using resolved prefixes and merged metadata", func(t *testing.T) {
-		fakeNetBox := &fakeNetBoxClient{
-			resolvedPrefixIDs: []int32{100, 200},
-			allocations: map[int32]fakeAllocationResult{
-				100: {
-					address: &nb.AllocatedAddress{
-						ID:      42,
-						Address: "10.0.0.5",
-						Prefix:  24,
-						DNSName: "claim.example.com",
-					},
-				},
-			},
-		}
-		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy()).Build()
-		handler := &netboxClaimHandler{
-			Client: k8sClient,
-			claim:  claim.DeepCopy(),
-			pool:   pool.DeepCopy(),
-			newClientFunc: func(nb.ConnectionConfig) (nb.Client, error) {
-				return fakeNetBox, nil
-			},
-		}
-
-		address := &ipamv1.IPAddress{}
-		res, err := handler.EnsureAddress(ctx, address)
-		if err != nil || res != nil {
-			t.Fatalf("EnsureAddress() error = %v result = %#v", err, res)
-		}
-		if address.Spec.Address != "10.0.0.5" {
-			t.Fatalf("unexpected address: %#v", address.Spec)
-		}
-		if address.Spec.Prefix == nil || *address.Spec.Prefix != 24 {
-			t.Fatalf("unexpected prefix: %#v", address.Spec.Prefix)
-		}
-		if len(fakeNetBox.allocateCalls) != 1 || fakeNetBox.allocateCalls[0] != 100 {
-			t.Fatalf("unexpected allocate calls: %#v", fakeNetBox.allocateCalls)
-		}
-		if fakeNetBox.ensureFieldName != nb.DefaultClaimUIDCustomField {
-			t.Fatalf("unexpected custom field check: %q", fakeNetBox.ensureFieldName)
-		}
-		if fakeNetBox.lastRequest == nil {
-			t.Fatal("expected allocation request to be recorded")
-		}
-		if fakeNetBox.lastRequest.Metadata.DNSName != "claim.example.com" {
-			t.Fatalf("unexpected dns name: %#v", fakeNetBox.lastRequest.Metadata)
-		}
-		if len(fakeNetBox.lastRequest.Metadata.Tags) != 1 || fakeNetBox.lastRequest.Metadata.Tags[0] != "claim-tag" {
-			t.Fatalf("unexpected tags: %#v", fakeNetBox.lastRequest.Metadata.Tags)
-		}
-		if fakeNetBox.lastRequest.Metadata.CustomFields["source"] != "pool" ||
-			fakeNetBox.lastRequest.Metadata.CustomFields["owner"] != "claim" {
-			t.Fatalf("unexpected custom fields: %#v", fakeNetBox.lastRequest.Metadata.CustomFields)
-		}
-		if fakeNetBox.lastRequest.ClaimUID != "claim-uid" {
-			t.Fatalf("unexpected claim uid: %q", fakeNetBox.lastRequest.ClaimUID)
-		}
+		testEnsureAddressAllocatesUsingResolvedPrefixes(ctx, t, scheme, secret, pool, claim)
 	})
-
 	t.Run("does not reallocate when address is already set", func(t *testing.T) {
-		fakeNetBox := &fakeNetBoxClient{
-			resolvedPrefixIDs: []int32{100, 200},
-			allocations: map[int32]fakeAllocationResult{
-				100: {
-					address: &nb.AllocatedAddress{ID: 42, Address: "10.0.0.5", Prefix: 24},
+		testEnsureAddressSkipsWhenAlreadySet(ctx, t, scheme, secret, pool, claim)
+	})
+	t.Run("reuses an existing NetBox IP for this claim UID instead of reallocating", func(t *testing.T) {
+		testEnsureAddressReusesExistingNetBoxIP(ctx, t, scheme, secret, pool, claim)
+	})
+	t.Run("uses the pool's cached resolved prefixes instead of resolving again", func(t *testing.T) {
+		testEnsureAddressUsesCachedResolvedPrefixes(ctx, t, scheme, secret, pool, claim)
+	})
+	t.Run("requeues when every prefix is exhausted", func(t *testing.T) {
+		testEnsureAddressRequeuesWhenExhausted(ctx, t, scheme, secret, pool, claim)
+	})
+}
+
+func testEnsureAddressAllocatesUsingResolvedPrefixes(
+	ctx context.Context,
+	t *testing.T,
+	scheme *runtime.Scheme,
+	secret *corev1.Secret,
+	pool *ipamv1alpha1.NetBoxIPPool,
+	claim *ipamv1.IPAddressClaim,
+) {
+	t.Helper()
+
+	fakeNetBox := &fakeNetBoxClient{
+		resolvedPrefixIDs: []int32{100, 200},
+		allocations: map[int32]fakeAllocationResult{
+			100: {
+				address: &nb.AllocatedAddress{
+					ID:      42,
+					Address: "10.0.0.5",
+					Prefix:  24,
+					DNSName: "claim.example.com",
 				},
 			},
-		}
-		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy()).Build()
-		handler := &netboxClaimHandler{
-			Client: k8sClient,
-			claim:  claim.DeepCopy(),
-			pool:   pool.DeepCopy(),
-			newClientFunc: func(nb.ConnectionConfig) (nb.Client, error) {
-				return fakeNetBox, nil
-			},
-		}
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy()).Build()
+	handler := &netboxClaimHandler{
+		Client: k8sClient,
+		claim:  claim.DeepCopy(),
+		pool:   pool.DeepCopy(),
+		newClientFunc: func(nb.ConnectionConfig) (nb.Client, error) {
+			return fakeNetBox, nil
+		},
+	}
 
-		address := &ipamv1.IPAddress{
-			Spec: ipamv1.IPAddressSpec{
-				Address: "10.0.0.9",
-				Prefix:  int32Ptr(24),
-			},
-		}
-		res, err := handler.EnsureAddress(ctx, address)
-		if err != nil || res != nil {
-			t.Fatalf("EnsureAddress() error = %v result = %#v", err, res)
-		}
-		if address.Spec.Address != "10.0.0.9" {
-			t.Fatalf("unexpected address mutation: %#v", address.Spec)
-		}
-		if address.Spec.Prefix == nil || *address.Spec.Prefix != 24 {
-			t.Fatalf("unexpected prefix mutation: %#v", address.Spec.Prefix)
-		}
-		if len(fakeNetBox.allocateCalls) != 0 {
-			t.Fatalf("unexpected allocate calls: %#v", fakeNetBox.allocateCalls)
-		}
-		if fakeNetBox.ensureFieldName != "" {
-			t.Fatalf("unexpected custom field check: %q", fakeNetBox.ensureFieldName)
-		}
-		if fakeNetBox.lastRequest != nil {
-			t.Fatalf("unexpected allocation request: %#v", fakeNetBox.lastRequest)
-		}
-	})
+	address := &ipamv1.IPAddress{}
+	res, err := handler.EnsureAddress(ctx, address)
+	if err != nil || res != nil {
+		t.Fatalf("EnsureAddress() error = %v result = %#v", err, res)
+	}
+	if address.Spec.Address != "10.0.0.5" {
+		t.Fatalf("unexpected address: %#v", address.Spec)
+	}
+	if address.Spec.Prefix == nil || *address.Spec.Prefix != 24 {
+		t.Fatalf("unexpected prefix: %#v", address.Spec.Prefix)
+	}
+	if len(fakeNetBox.allocateCalls) != 1 || fakeNetBox.allocateCalls[0] != 100 {
+		t.Fatalf("unexpected allocate calls: %#v", fakeNetBox.allocateCalls)
+	}
+	if fakeNetBox.ensureFieldName != nb.DefaultClaimUIDCustomField {
+		t.Fatalf("unexpected custom field check: %q", fakeNetBox.ensureFieldName)
+	}
+	if fakeNetBox.lastRequest == nil {
+		t.Fatal("expected allocation request to be recorded")
+	}
+	if fakeNetBox.lastRequest.Metadata.DNSName != "claim.example.com" {
+		t.Fatalf("unexpected dns name: %#v", fakeNetBox.lastRequest.Metadata)
+	}
+	if len(fakeNetBox.lastRequest.Metadata.Tags) != 1 || fakeNetBox.lastRequest.Metadata.Tags[0] != "claim-tag" {
+		t.Fatalf("unexpected tags: %#v", fakeNetBox.lastRequest.Metadata.Tags)
+	}
+	if fakeNetBox.lastRequest.Metadata.CustomFields["source"] != "pool" ||
+		fakeNetBox.lastRequest.Metadata.CustomFields["owner"] != "claim" {
+		t.Fatalf("unexpected custom fields: %#v", fakeNetBox.lastRequest.Metadata.CustomFields)
+	}
+	if fakeNetBox.lastRequest.ClaimUID != "claim-uid" {
+		t.Fatalf("unexpected claim uid: %q", fakeNetBox.lastRequest.ClaimUID)
+	}
+}
 
-	t.Run("requeues when every prefix is exhausted", func(t *testing.T) {
-		fakeNetBox := &fakeNetBoxClient{
-			resolvedPrefixIDs: []int32{100, 200},
-			allocations: map[int32]fakeAllocationResult{
-				100: {err: nb.ErrNoAvailableIP},
-				200: {err: nb.ErrNoAvailableIP},
-			},
-		}
-		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy()).Build()
-		handler := &netboxClaimHandler{
-			Client: k8sClient,
-			claim:  claim.DeepCopy(),
-			pool:   pool.DeepCopy(),
-			newClientFunc: func(nb.ConnectionConfig) (nb.Client, error) {
-				return fakeNetBox, nil
-			},
-		}
+func testEnsureAddressSkipsWhenAlreadySet(
+	ctx context.Context,
+	t *testing.T,
+	scheme *runtime.Scheme,
+	secret *corev1.Secret,
+	pool *ipamv1alpha1.NetBoxIPPool,
+	claim *ipamv1.IPAddressClaim,
+) {
+	t.Helper()
 
-		res, err := handler.EnsureAddress(ctx, &ipamv1.IPAddress{})
-		if err == nil {
-			t.Fatal("expected exhaustion error")
-		}
-		if res == nil || res.RequeueAfter != poolExhaustedRequeueAfter {
-			t.Fatalf("unexpected result: %#v", res)
-		}
-		if len(fakeNetBox.allocateCalls) != 2 {
-			t.Fatalf("unexpected allocate calls: %#v", fakeNetBox.allocateCalls)
-		}
-	})
+	fakeNetBox := &fakeNetBoxClient{
+		resolvedPrefixIDs: []int32{100, 200},
+		allocations: map[int32]fakeAllocationResult{
+			100: {
+				address: &nb.AllocatedAddress{ID: 42, Address: "10.0.0.5", Prefix: 24},
+			},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy()).Build()
+	handler := &netboxClaimHandler{
+		Client: k8sClient,
+		claim:  claim.DeepCopy(),
+		pool:   pool.DeepCopy(),
+		newClientFunc: func(nb.ConnectionConfig) (nb.Client, error) {
+			return fakeNetBox, nil
+		},
+	}
+
+	address := &ipamv1.IPAddress{
+		Spec: ipamv1.IPAddressSpec{
+			Address: "10.0.0.9",
+			Prefix:  int32Ptr(24),
+		},
+	}
+	res, err := handler.EnsureAddress(ctx, address)
+	if err != nil || res != nil {
+		t.Fatalf("EnsureAddress() error = %v result = %#v", err, res)
+	}
+	if address.Spec.Address != "10.0.0.9" {
+		t.Fatalf("unexpected address mutation: %#v", address.Spec)
+	}
+	if address.Spec.Prefix == nil || *address.Spec.Prefix != 24 {
+		t.Fatalf("unexpected prefix mutation: %#v", address.Spec.Prefix)
+	}
+	if len(fakeNetBox.allocateCalls) != 0 {
+		t.Fatalf("unexpected allocate calls: %#v", fakeNetBox.allocateCalls)
+	}
+	if fakeNetBox.ensureFieldName != "" {
+		t.Fatalf("unexpected custom field check: %q", fakeNetBox.ensureFieldName)
+	}
+	if fakeNetBox.lastRequest != nil {
+		t.Fatalf("unexpected allocation request: %#v", fakeNetBox.lastRequest)
+	}
+}
+
+func testEnsureAddressReusesExistingNetBoxIP(
+	ctx context.Context,
+	t *testing.T,
+	scheme *runtime.Scheme,
+	secret *corev1.Secret,
+	pool *ipamv1alpha1.NetBoxIPPool,
+	claim *ipamv1.IPAddressClaim,
+) {
+	t.Helper()
+
+	fakeNetBox := &fakeNetBoxClient{
+		resolvedPrefixIDs: []int32{100, 200},
+		findResult:        &nb.AllocatedAddress{ID: 42, Address: "10.0.0.5", Prefix: 24},
+		allocations: map[int32]fakeAllocationResult{
+			100: {address: &nb.AllocatedAddress{ID: 99, Address: "10.0.0.99", Prefix: 24}},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy()).Build()
+	handler := &netboxClaimHandler{
+		Client: k8sClient,
+		claim:  claim.DeepCopy(),
+		pool:   pool.DeepCopy(),
+		newClientFunc: func(nb.ConnectionConfig) (nb.Client, error) {
+			return fakeNetBox, nil
+		},
+	}
+
+	address := &ipamv1.IPAddress{}
+	res, err := handler.EnsureAddress(ctx, address)
+	if err != nil || res != nil {
+		t.Fatalf("EnsureAddress() error = %v result = %#v", err, res)
+	}
+	if address.Spec.Address != "10.0.0.5" {
+		t.Fatalf("expected the pre-existing NetBox IP to be reused, got: %#v", address.Spec)
+	}
+	if address.Spec.Prefix == nil || *address.Spec.Prefix != 24 {
+		t.Fatalf("unexpected prefix: %#v", address.Spec.Prefix)
+	}
+	if len(fakeNetBox.allocateCalls) != 0 {
+		t.Fatalf("expected no new allocation when an existing IP is found, got: %#v", fakeNetBox.allocateCalls)
+	}
+	if fakeNetBox.ensureFieldName != "" {
+		t.Fatalf("expected no custom field check when reusing an existing IP, got: %q", fakeNetBox.ensureFieldName)
+	}
+}
+
+func testEnsureAddressUsesCachedResolvedPrefixes(
+	ctx context.Context,
+	t *testing.T,
+	scheme *runtime.Scheme,
+	secret *corev1.Secret,
+	pool *ipamv1alpha1.NetBoxIPPool,
+	claim *ipamv1.IPAddressClaim,
+) {
+	t.Helper()
+
+	fakeNetBox := &fakeNetBoxClient{
+		allocations: map[int32]fakeAllocationResult{
+			200: {address: &nb.AllocatedAddress{ID: 42, Address: "10.0.0.5", Prefix: 24}},
+		},
+	}
+	cachedPool := pool.DeepCopy()
+	cachedPool.Status.ResolvedPrefixes = []int32{200}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(secret.DeepCopy(), cachedPool.DeepCopy()).
+		Build()
+	handler := &netboxClaimHandler{
+		Client: k8sClient,
+		claim:  claim.DeepCopy(),
+		pool:   cachedPool,
+		newClientFunc: func(nb.ConnectionConfig) (nb.Client, error) {
+			return fakeNetBox, nil
+		},
+	}
+
+	address := &ipamv1.IPAddress{}
+	res, err := handler.EnsureAddress(ctx, address)
+	if err != nil || res != nil {
+		t.Fatalf("EnsureAddress() error = %v result = %#v", err, res)
+	}
+	if fakeNetBox.resolveCalls != 0 {
+		t.Fatalf(
+			"expected ResolvePrefixIDs not to be called when status.resolvedPrefixes is cached, got %d calls",
+			fakeNetBox.resolveCalls,
+		)
+	}
+	if len(fakeNetBox.allocateCalls) != 1 || fakeNetBox.allocateCalls[0] != 200 {
+		t.Fatalf("expected allocation against the cached prefix 200, got: %#v", fakeNetBox.allocateCalls)
+	}
+}
+
+func testEnsureAddressRequeuesWhenExhausted(
+	ctx context.Context,
+	t *testing.T,
+	scheme *runtime.Scheme,
+	secret *corev1.Secret,
+	pool *ipamv1alpha1.NetBoxIPPool,
+	claim *ipamv1.IPAddressClaim,
+) {
+	t.Helper()
+
+	fakeNetBox := &fakeNetBoxClient{
+		resolvedPrefixIDs: []int32{100, 200},
+		allocations: map[int32]fakeAllocationResult{
+			100: {err: nb.ErrNoAvailableIP},
+			200: {err: nb.ErrNoAvailableIP},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret.DeepCopy(), pool.DeepCopy()).Build()
+	handler := &netboxClaimHandler{
+		Client: k8sClient,
+		claim:  claim.DeepCopy(),
+		pool:   pool.DeepCopy(),
+		newClientFunc: func(nb.ConnectionConfig) (nb.Client, error) {
+			return fakeNetBox, nil
+		},
+	}
+
+	res, err := handler.EnsureAddress(ctx, &ipamv1.IPAddress{})
+	if err == nil {
+		t.Fatal("expected exhaustion error")
+	}
+	if res == nil || res.RequeueAfter != poolExhaustedRequeueAfter {
+		t.Fatalf("unexpected result: %#v", res)
+	}
+	if len(fakeNetBox.allocateCalls) != 2 {
+		t.Fatalf("unexpected allocate calls: %#v", fakeNetBox.allocateCalls)
+	}
 }
 
 func TestReleaseAddress(t *testing.T) {
@@ -383,6 +518,7 @@ func TestReleaseAddress(t *testing.T) {
 type fakeNetBoxClient struct {
 	resolvedPrefixIDs   []int32
 	resolveErr          error
+	resolveCalls        int
 	ensureFieldName     string
 	ensureErr           error
 	allocations         map[int32]fakeAllocationResult
@@ -407,6 +543,7 @@ func (f *fakeNetBoxClient) ResolvePrefixIDs(
 	_ context.Context,
 	_ []ipamv1alpha1.NetBoxPrefixReference,
 ) ([]int32, error) {
+	f.resolveCalls++
 	return f.resolvedPrefixIDs, f.resolveErr
 }
 

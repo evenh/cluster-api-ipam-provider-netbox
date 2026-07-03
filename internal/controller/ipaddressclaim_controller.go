@@ -40,11 +40,6 @@ import (
 const poolExhaustedRequeueAfter = 15 * time.Second
 const missingAddressRequeueAfter = 5 * time.Second
 
-type claimPool interface {
-	client.Object
-	PoolSpec() *ipamv1alpha1.NetBoxIPPoolSpec
-}
-
 type NetBoxProviderAdapter struct {
 	NewClient func(nb.ConnectionConfig) (nb.Client, error)
 }
@@ -53,7 +48,7 @@ type netboxClaimHandler struct {
 	client.Client
 
 	claim         *ipamv1.IPAddressClaim
-	pool          claimPool
+	pool          statusPool
 	newClientFunc func(nb.ConnectionConfig) (nb.Client, error)
 }
 
@@ -123,10 +118,21 @@ func (h *netboxClaimHandler) FetchPool(ctx context.Context) (client.Object, *ctr
 	return h.pool, nil, nil
 }
 
-func (h *netboxClaimHandler) EnsureAddress(ctx context.Context, address *ipamv1.IPAddress) (*ctrl.Result, error) {
+func (h *netboxClaimHandler) EnsureAddress(
+	ctx context.Context,
+	address *ipamv1.IPAddress,
+) (_ *ctrl.Result, err error) {
 	if address.Spec.Address != "" {
 		return nil, nil
 	}
+
+	logger := ctrl.LoggerFrom(ctx)
+	defer func() {
+		if err != nil {
+			logger.Error(err, "ensure NetBox address failed")
+			err = nb.SanitizedError(err)
+		}
+	}()
 
 	poolSpec := h.pool.PoolSpec()
 	cfg, err := nb.LoadConnectionConfig(ctx, h.Client, h.pool.GetNamespace(), poolSpec.ConnectionSecretRef)
@@ -138,14 +144,37 @@ func (h *netboxClaimHandler) EnsureAddress(ctx context.Context, address *ipamv1.
 		return nil, err
 	}
 
+	ownershipTag := nb.OwnershipTag(poolSpec)
 	claimUIDField := nb.ClaimUIDCustomField(poolSpec)
+
+	// Idempotency: a previous reconcile may have allocated a NetBox IP for this claim
+	// and then crashed or failed before that allocation could be persisted onto the
+	// IPAddress object (address.Spec.Address would still read "" here in that case).
+	// Reuse the existing NetBox record instead of allocating a second, orphaned one.
+	existing, err := netboxClient.FindIPAddressByClaimUID(ctx, ownershipTag, claimUIDField, string(h.claim.GetUID()))
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		address.Spec.Address = existing.Address
+		prefix := existing.Prefix
+		address.Spec.Prefix = &prefix
+		return nil, nil
+	}
+
 	if customFieldErr := netboxClient.EnsureIPAddressCustomField(ctx, claimUIDField); customFieldErr != nil {
 		return nil, customFieldErr
 	}
 
-	prefixIDs, err := netboxClient.ResolvePrefixIDs(ctx, poolSpec.Prefixes)
-	if err != nil {
-		return nil, err
+	// Prefer the pool's cached prefix resolution (kept warm by the pool reconciler) over
+	// resolving CIDRs against NetBox on every claim reconcile. Fall back to a live
+	// resolution when the cache isn't warm yet (e.g. a brand new pool).
+	prefixIDs := h.pool.PoolStatus().ResolvedPrefixes
+	if len(prefixIDs) == 0 {
+		prefixIDs, err = netboxClient.ResolvePrefixIDs(ctx, poolSpec.Prefixes)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	metadata, err := nb.EffectivePoolMetadata(poolSpec.MetadataDefaults, h.claim)
@@ -155,7 +184,7 @@ func (h *netboxClaimHandler) EnsureAddress(ctx context.Context, address *ipamv1.
 
 	request := nb.AllocationRequest{
 		Metadata:          metadata,
-		OwnershipTag:      nb.OwnershipTag(poolSpec),
+		OwnershipTag:      ownershipTag,
 		ClaimUIDFieldName: claimUIDField,
 		ClaimUID:          string(h.claim.GetUID()),
 		Description:       fmt.Sprintf("%s/%s", h.claim.Namespace, h.claim.Name),
@@ -179,17 +208,23 @@ func (h *netboxClaimHandler) EnsureAddress(ctx context.Context, address *ipamv1.
 	return &ctrl.Result{RequeueAfter: poolExhaustedRequeueAfter}, errors.New("pool exhausted")
 }
 
-func (h *netboxClaimHandler) ReleaseAddress(ctx context.Context) (*ctrl.Result, error) {
+func (h *netboxClaimHandler) ReleaseAddress(ctx context.Context) (_ *ctrl.Result, err error) {
 	if h.pool == nil {
 		return nil, nil
 	}
 
+	logger := ctrl.LoggerFrom(ctx)
+	defer func() {
+		if err != nil {
+			logger.Error(err, "release NetBox address failed")
+			err = nb.SanitizedError(err)
+		}
+	}()
+
 	k8sIPAddress := &ipamv1.IPAddress{}
 	key := types.NamespacedName{Namespace: h.claim.Namespace, Name: h.claim.Name}
-	if err := h.Get(ctx, key, k8sIPAddress); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, err
-		}
+	if getErr := h.Get(ctx, key, k8sIPAddress); getErr != nil && !apierrors.IsNotFound(getErr) {
+		return nil, getErr
 	}
 
 	poolSpec := h.pool.PoolSpec()
@@ -202,25 +237,9 @@ func (h *netboxClaimHandler) ReleaseAddress(ctx context.Context) (*ctrl.Result, 
 		return nil, err
 	}
 
-	ipAddress, err := netboxClient.FindIPAddressByClaimUID(
-		ctx,
-		nb.OwnershipTag(poolSpec),
-		nb.ClaimUIDCustomField(poolSpec),
-		string(h.claim.GetUID()),
-	)
+	ipAddress, err := h.findExistingNetBoxIP(ctx, netboxClient, poolSpec, k8sIPAddress)
 	if err != nil {
 		return nil, err
-	}
-	if ipAddress == nil && k8sIPAddress.Name != "" {
-		for _, candidate := range netboxAddressCandidates(k8sIPAddress) {
-			ipAddress, err = netboxClient.FindIPAddressByAddress(ctx, nb.OwnershipTag(poolSpec), candidate)
-			if err != nil {
-				return nil, err
-			}
-			if ipAddress != nil {
-				break
-			}
-		}
 	}
 	if ipAddress == nil {
 		if k8sIPAddress.Name != "" {
@@ -235,6 +254,37 @@ func (h *netboxClaimHandler) ReleaseAddress(ctx context.Context) (*ctrl.Result, 
 		return nil, nil
 	}
 	return nil, netboxClient.DeleteIPAddress(ctx, ipAddress.ID)
+}
+
+// findExistingNetBoxIP looks up the NetBox IP address owned by this claim, first by the
+// claim UID custom field and, if that misses (e.g. the field was added after the address
+// was allocated), by matching the address recorded on the Kubernetes IPAddress object.
+func (h *netboxClaimHandler) findExistingNetBoxIP(
+	ctx context.Context,
+	netboxClient nb.Client,
+	poolSpec *ipamv1alpha1.NetBoxIPPoolSpec,
+	k8sIPAddress *ipamv1.IPAddress,
+) (*nb.AllocatedAddress, error) {
+	ipAddress, err := netboxClient.FindIPAddressByClaimUID(
+		ctx,
+		nb.OwnershipTag(poolSpec),
+		nb.ClaimUIDCustomField(poolSpec),
+		string(h.claim.GetUID()),
+	)
+	if err != nil || ipAddress != nil || k8sIPAddress.Name == "" {
+		return ipAddress, err
+	}
+
+	for _, candidate := range netboxAddressCandidates(k8sIPAddress) {
+		ipAddress, err = netboxClient.FindIPAddressByAddress(ctx, nb.OwnershipTag(poolSpec), candidate)
+		if err != nil {
+			return nil, err
+		}
+		if ipAddress != nil {
+			return ipAddress, nil
+		}
+	}
+	return nil, nil
 }
 
 func netboxAddressCandidates(address *ipamv1.IPAddress) []string {

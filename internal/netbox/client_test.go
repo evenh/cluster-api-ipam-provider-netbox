@@ -8,10 +8,38 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
 	ipamv1alpha1 "github.com/evenh/cluster-api-ipam-provider-netbox/api/v1alpha1"
 )
+
+func TestSanitizedErrorStripsNetBoxResponseBody(t *testing.T) {
+	client := newTestAPIClient(
+		roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return jsonResponse(r, http.StatusBadRequest, map[string]any{
+				"internal_hostname": "netbox-db-primary.internal.example.com",
+				"detail":            "constraint violation on table ipam_ipaddress",
+			}), nil
+		}),
+	)
+
+	_, err := client.ResolvePrefixIDs(context.Background(), []ipamv1alpha1.NetBoxPrefixReference{{CIDR: "10.0.0.0/24"}})
+	if err == nil {
+		t.Fatal("expected an error from the mocked 400 response")
+	}
+	if !strings.Contains(err.Error(), "netbox-db-primary.internal.example.com") {
+		t.Fatalf("expected the raw error to contain the response body, got: %v", err)
+	}
+
+	sanitized := SanitizedError(err)
+	if strings.Contains(sanitized.Error(), "netbox-db-primary.internal.example.com") {
+		t.Fatalf("SanitizedError() leaked the NetBox response body: %v", sanitized)
+	}
+	if strings.Contains(sanitized.Error(), "constraint violation") {
+		t.Fatalf("SanitizedError() leaked the NetBox response body: %v", sanitized)
+	}
+}
 
 func TestAllocateIPAddressEnsuresTags(t *testing.T) {
 	tags := map[string]string{
@@ -23,7 +51,6 @@ func TestAllocateIPAddressEnsuresTags(t *testing.T) {
 	var userAgents []string
 
 	client := newTestAPIClient(
-		"https://netbox.example.com",
 		roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			userAgents = append(userAgents, r.Header.Get("User-Agent"))
 
@@ -144,7 +171,6 @@ func TestAllocateIPAddressEnsuresTags(t *testing.T) {
 
 func TestResolvePrefixIDs(t *testing.T) {
 	client := newTestAPIClient(
-		"https://netbox.example.com",
 		roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			if r.Method != http.MethodGet || r.URL.Path != "/api/ipam/prefixes/" {
 				return jsonResponse(r, http.StatusNotFound, map[string]any{"detail": "not found"}), nil
@@ -183,7 +209,6 @@ func TestResolvePrefixIDs(t *testing.T) {
 
 func TestEnsureIPAddressCustomField(t *testing.T) {
 	client := newTestAPIClient(
-		"https://netbox.example.com",
 		roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			if r.Method != http.MethodGet || r.URL.Path != "/api/extras/custom-fields/" {
 				return jsonResponse(r, http.StatusNotFound, map[string]any{"detail": "not found"}), nil
@@ -206,6 +231,67 @@ func TestEnsureIPAddressCustomField(t *testing.T) {
 
 	if err := client.EnsureIPAddressCustomField(context.Background(), DefaultClaimUIDCustomField); err != nil {
 		t.Fatalf("EnsureIPAddressCustomField() error = %v", err)
+	}
+}
+
+func TestFindIPAddressByClaimUIDFollowsPagination(t *testing.T) {
+	var pagesFetched []string
+
+	client := newTestAPIClient(
+		roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.Method == http.MethodGet && r.URL.Path == "/api/extras/tags/" {
+				return jsonResponse(r, http.StatusOK, map[string]any{
+					"count": 1,
+					"next":  "",
+					"results": []map[string]any{{
+						"id": 1, "name": "cluster-api", "slug": "cluster-api",
+					}},
+				}), nil
+			}
+			if r.Method != http.MethodGet || r.URL.Path != "/api/ipam/ip-addresses/" {
+				return jsonResponse(r, http.StatusNotFound, map[string]any{"detail": "not found"}), nil
+			}
+			pagesFetched = append(pagesFetched, r.URL.RawQuery)
+
+			if r.URL.Query().Get("offset") != "1" {
+				// First page: one non-matching result, plus a next link to page 2.
+				return jsonResponse(r, http.StatusOK, map[string]any{
+					"count": 2,
+					"next":  "https://netbox.example.com/api/ipam/ip-addresses/?limit=1&offset=1&tag=cluster-api",
+					"results": []map[string]any{{
+						"id":            1,
+						"address":       "10.0.0.1/24",
+						"custom_fields": map[string]any{"cluster_api_claim_uid": "other-claim"},
+					}},
+				}), nil
+			}
+			// Second (last) page: the actual match, no further next link.
+			return jsonResponse(r, http.StatusOK, map[string]any{
+				"count": 2,
+				"next":  "",
+				"results": []map[string]any{{
+					"id":            2,
+					"address":       "10.0.0.2/24",
+					"custom_fields": map[string]any{"cluster_api_claim_uid": "target-claim"},
+				}},
+			}), nil
+		}),
+	)
+
+	found, err := client.FindIPAddressByClaimUID(
+		context.Background(),
+		"cluster-api",
+		"cluster_api_claim_uid",
+		"target-claim",
+	)
+	if err != nil {
+		t.Fatalf("FindIPAddressByClaimUID() error = %v", err)
+	}
+	if len(pagesFetched) != 2 {
+		t.Fatalf("expected 2 pages fetched, got %d: %v", len(pagesFetched), pagesFetched)
+	}
+	if found == nil || found.Address != "10.0.0.2" {
+		t.Fatalf("FindIPAddressByClaimUID() = %#v, want address 10.0.0.2 from page 2", found)
 	}
 }
 
@@ -240,24 +326,9 @@ func TestAuthorizationHeaderValue(t *testing.T) {
 	}
 }
 
-func TestToNestedTagsIncludesSlug(t *testing.T) {
-	got := toNestedTags([]string{"claim override", "pool-default"})
-	gotRefs := make([]string, 0, len(got))
-	for _, tag := range got {
-		gotRefs = append(gotRefs, tag.Name+":"+tag.Slug)
-	}
-	wantRefs := []string{
-		"claim override:claim-override",
-		"pool-default:pool-default",
-	}
-	if !slices.Equal(gotRefs, wantRefs) {
-		t.Fatalf("toNestedTags() = %#v, want %#v", gotRefs, wantRefs)
-	}
-}
-
-func newTestAPIClient(baseURL string, transport http.RoundTripper) *APIClient {
+func newTestAPIClient(transport http.RoundTripper) *APIClient {
 	return &APIClient{
-		baseURL:    baseURL,
+		baseURL:    "https://netbox.example.com",
 		token:      "token",
 		httpClient: &http.Client{Transport: transport},
 	}

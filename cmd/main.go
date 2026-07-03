@@ -236,6 +236,7 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, watchFilter string)
 			Scheme:   mgr.GetScheme(),
 			Recorder: mgr.GetEventRecorder("netboxippool"),
 		},
+		WatchFilterValue: watchFilter,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("create NetBoxIPPool reconciler: %w", err)
 	}
@@ -246,6 +247,7 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, watchFilter string)
 			Scheme:   mgr.GetScheme(),
 			Recorder: mgr.GetEventRecorder("globalnetboxippool"),
 		},
+		WatchFilterValue: watchFilter,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("create GlobalNetBoxIPPool reconciler: %w", err)
 	}

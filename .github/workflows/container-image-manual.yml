@@ -21,8 +21,11 @@ jobs:
     steps:
       - name: Sanitize tag
         id: sanitize
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          FALLBACK_TAG: ${{ github.ref_name }}-${{ github.sha }}
         run: |
-          RAW_TAG="${{ inputs.tag != '' && inputs.tag || format('{0}-{1}', github.ref_name, github.sha) }}"
+          RAW_TAG="${INPUT_TAG:-$FALLBACK_TAG}"
           SANITIZED=$(echo "$RAW_TAG" | tr "/" "-")
           echo "tag=$SANITIZED" >> "$GITHUB_OUTPUT"
 

@@ -35,6 +35,7 @@ import (
 )
 
 const addressPartsCount = 2
+const customFieldsKey = "custom_fields"
 const v2TokenPrefix = "nbt_"
 
 type Client interface {
@@ -82,8 +83,9 @@ func ComposeV2Token(key, secret string) string {
 }
 
 type netBoxListResponse[T any] struct {
-	Count   int `json:"count"`
-	Results []T `json:"results"`
+	Count   int    `json:"count"`
+	Next    string `json:"next"`
+	Results []T    `json:"results"`
 }
 
 type netBoxTag struct {
@@ -128,6 +130,19 @@ func (e *apiError) Error() string {
 	return fmt.Sprintf("%s: %s", e.status, body)
 }
 
+// SanitizedError strips NetBox's raw HTTP response body from err. Use it before surfacing
+// an error to a lower-privileged consumer than the NetBox connection Secret, such as an
+// IPAddressClaim status condition: apiError.Error() otherwise includes the full response
+// body, which may contain internal NetBox details the claim creator has no other access to.
+// The caller should log the original, unsanitized error before calling this.
+func SanitizedError(err error) error {
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		return fmt.Errorf("NetBox request failed: %s", apiErr.status)
+	}
+	return err
+}
+
 func NewClient(cfg ConnectionConfig) (Client, error) {
 	httpClient, err := NewHTTPClient(cfg)
 	if err != nil {
@@ -157,15 +172,15 @@ func (c *APIClient) ResolvePrefixIDs(ctx context.Context, refs []ipamv1alpha1.Ne
 				query.Set("vrf_id", strconv.FormatInt(int64(*ref.VRFID), 10))
 			}
 
-			var result netBoxListResponse[netBoxPrefix]
-			if err := c.get(ctx, "/api/ipam/prefixes/", query, &result); err != nil {
+			results, err := listAll[netBoxPrefix](ctx, c, "/api/ipam/prefixes/", query)
+			if err != nil {
 				return nil, fmt.Errorf("list prefixes for %q: %w", ref.CIDR, err)
 			}
-			switch len(result.Results) {
+			switch len(results) {
 			case 0:
 				return nil, fmt.Errorf("no NetBox prefix matches %q", ref.CIDR)
 			case 1:
-				ids = append(ids, result.Results[0].ID)
+				ids = append(ids, results[0].ID)
 			default:
 				return nil, fmt.Errorf("prefix reference %q is ambiguous", ref.CIDR)
 			}
@@ -181,11 +196,11 @@ func (c *APIClient) EnsureIPAddressCustomField(ctx context.Context, fieldName st
 	query.Set("name", fieldName)
 	query.Set("object_type", "ipam.ipaddress")
 
-	var result netBoxListResponse[netBoxCustomField]
-	if err := c.get(ctx, "/api/extras/custom-fields/", query, &result); err != nil {
+	results, err := listAll[netBoxCustomField](ctx, c, "/api/extras/custom-fields/", query)
+	if err != nil {
 		return fmt.Errorf("list custom fields: %w", err)
 	}
-	if len(result.Results) == 0 {
+	if len(results) == 0 {
 		return fmt.Errorf("NetBox custom field %q for ipam.ipaddress does not exist", fieldName)
 	}
 	return nil
@@ -210,7 +225,7 @@ func (c *APIClient) AllocateIPAddress(
 	payload := map[string]any{
 		"status":        req.Status,
 		"description":   req.Description,
-		"custom_fields": customFields,
+		customFieldsKey: customFields,
 		"tags":          tags,
 	}
 	if req.Metadata.DNSName != "" {
@@ -248,14 +263,21 @@ func (c *APIClient) FindIPAddressByClaimUID(
 	ctx context.Context,
 	ownershipTag, fieldName, claimUID string,
 ) (*AllocatedAddress, error) {
+	// NetBox's ?tag= filter validates its value against existing Tag objects and 400s
+	// otherwise, so the tag must exist before it can be used to filter, even though this
+	// call never intends to create one.
+	if _, err := c.ensureTag(ctx, ownershipTag); err != nil {
+		return nil, fmt.Errorf("ensure ownership tag: %w", err)
+	}
+
 	query := url.Values{}
 	query.Set("tag", ownershipTag)
 
-	var result netBoxListResponse[netBoxIPAddress]
-	if err := c.get(ctx, "/api/ipam/ip-addresses/", query, &result); err != nil {
+	results, err := listAll[netBoxIPAddress](ctx, c, "/api/ipam/ip-addresses/", query)
+	if err != nil {
 		return nil, fmt.Errorf("list IP addresses: %w", err)
 	}
-	for _, item := range result.Results {
+	for _, item := range results {
 		if fmt.Sprint(item.CustomFields[fieldName]) == claimUID {
 			return mapIPAddress(item), nil
 		}
@@ -267,15 +289,19 @@ func (c *APIClient) FindIPAddressByAddress(
 	ctx context.Context,
 	ownershipTag, address string,
 ) (*AllocatedAddress, error) {
+	if _, err := c.ensureTag(ctx, ownershipTag); err != nil {
+		return nil, fmt.Errorf("ensure ownership tag: %w", err)
+	}
+
 	query := url.Values{}
 	query.Set("tag", ownershipTag)
 	query.Set("address", address)
 
-	var result netBoxListResponse[netBoxIPAddress]
-	if err := c.get(ctx, "/api/ipam/ip-addresses/", query, &result); err != nil {
+	results, err := listAll[netBoxIPAddress](ctx, c, "/api/ipam/ip-addresses/", query)
+	if err != nil {
 		return nil, fmt.Errorf("list IP addresses by address: %w", err)
 	}
-	for _, item := range result.Results {
+	for _, item := range results {
 		mapped := mapIPAddress(item)
 		if strings.TrimSpace(item.Address) == address || strings.TrimSpace(mapped.Address) == address {
 			return mapped, nil
@@ -363,11 +389,11 @@ func (c *APIClient) ensureTag(ctx context.Context, name string) (netBoxTag, erro
 	query := url.Values{}
 	query.Set("name", name)
 
-	var result netBoxListResponse[netBoxTag]
-	if err := c.get(ctx, "/api/extras/tags/", query, &result); err != nil {
+	results, err := listAll[netBoxTag](ctx, c, "/api/extras/tags/", query)
+	if err != nil {
 		return netBoxTag{}, fmt.Errorf("list tag %q: %w", name, err)
 	}
-	for _, item := range result.Results {
+	for _, item := range results {
 		if item.Name == name {
 			return item, nil
 		}
@@ -378,25 +404,13 @@ func (c *APIClient) ensureTag(ctx context.Context, name string) (netBoxTag, erro
 		Slug: slugifyTag(name),
 	}
 	var created netBoxTag
-	if err := c.post(ctx, "/api/extras/tags/", request, &created, http.StatusCreated); err != nil {
+	if err = c.post(ctx, "/api/extras/tags/", request, &created, http.StatusCreated); err != nil {
 		return netBoxTag{}, fmt.Errorf("create tag %q: %w", name, err)
 	}
 	if created.Name == "" {
 		return netBoxTag{}, fmt.Errorf("create tag %q: empty response", name)
 	}
 	return created, nil
-}
-
-func toNestedTags(tags []string) []netBoxTag {
-	out := make([]netBoxTag, 0, len(tags))
-	for _, tag := range tags {
-		tag = strings.TrimSpace(tag)
-		if tag == "" {
-			continue
-		}
-		out = append(out, netBoxTag{Name: tag, Slug: slugifyTag(tag)})
-	}
-	return out
 }
 
 func slugifyTag(value string) string {
@@ -450,6 +464,29 @@ func isNoAvailableIPError(err error) bool {
 
 func (c *APIClient) get(ctx context.Context, path string, query url.Values, response any) error {
 	return c.do(ctx, http.MethodGet, path, query, nil, response, http.StatusOK)
+}
+
+// listAll follows NetBox's paginated "next" links until exhausted, returning every result
+// across all pages. NetBox's default page size (50) means any list endpoint can be
+// paginated; a plain get() into a netBoxListResponse only ever sees the first page.
+func listAll[T any](ctx context.Context, c *APIClient, path string, query url.Values) ([]T, error) {
+	var all []T
+	nextPath, nextQuery := path, query
+	for {
+		var page netBoxListResponse[T]
+		if err := c.get(ctx, nextPath, nextQuery, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Results...)
+		if page.Next == "" {
+			return all, nil
+		}
+		next, err := url.Parse(page.Next)
+		if err != nil {
+			return nil, fmt.Errorf("parse next page url %q: %w", page.Next, err)
+		}
+		nextPath, nextQuery = next.Path, next.Query()
+	}
 }
 
 func (c *APIClient) post(ctx context.Context, path string, request any, response any, expectedStatus ...int) error {
