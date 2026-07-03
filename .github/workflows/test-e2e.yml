@@ -19,7 +19,7 @@ jobs:
       GOCACHE: ${{ github.workspace }}/.cache/go-build
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -28,7 +28,7 @@ jobs:
           cache: true
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@v5
 
       - name: Install kind
         run: |
