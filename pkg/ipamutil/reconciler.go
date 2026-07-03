@@ -24,6 +24,7 @@ import (
 
 	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -31,6 +32,7 @@ import (
 	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
 	clusterutil "sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/cluster-api/util/annotations"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
 	capipredicates "sigs.k8s.io/cluster-api/util/predicates"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -177,8 +179,15 @@ func (r *ClaimReconciler) reconcileClaimAddress(
 			if !claim.DeletionTimestamp.IsZero() {
 				return r.reconcileDelete(ctx, claim, handler)
 			}
+			setClaimReady(
+				claim,
+				metav1.ConditionFalse,
+				ipamv1.IPAddressClaimReadyPoolNotReadyReason,
+				"referenced pool not found",
+			)
 			return ctrl.Result{}, nil
 		}
+		setClaimReady(claim, metav1.ConditionFalse, ipamv1.IPAddressClaimReadyAllocationFailedReason, err.Error())
 		return unwrapResult(res), errors.Wrap(err, "fetch pool")
 	}
 	if pool == nil {
@@ -192,57 +201,22 @@ func (r *ClaimReconciler) reconcileClaimAddress(
 			"Pool",
 			pool.GetName(),
 		)
+		setClaimReady(
+			claim,
+			metav1.ConditionFalse,
+			ipamv1.IPAddressClaimReadyPoolNotReadyReason,
+			"referenced pool is paused",
+		)
 		return ctrl.Result{}, nil
 	}
 	if !claim.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, claim, handler)
 	}
 
-	address := NewIPAddress(claim, pool)
 	hadAddressRef := claim.Status.AddressRef.Name != ""
-	operationResult, err := controllerutil.CreateOrPatch(ctx, r.Client, &address, func() error {
-		if res, err = handler.EnsureAddress(ctx, &address); err != nil {
-			return err
-		}
-		if ownerRefErr := ensureIPAddressOwnerReferences(r.Scheme, &address, claim, pool); ownerRefErr != nil {
-			return errors.Wrap(ownerRefErr, "ensure owner references")
-		}
-		if val, ok := claim.Labels[clusterv1.ClusterNameLabel]; ok {
-			if address.Labels == nil {
-				address.Labels = map[string]string{}
-			}
-			address.Labels[clusterv1.ClusterNameLabel] = val
-		}
-		_ = controllerutil.AddFinalizer(&address, ProtectAddressFinalizer)
-		return nil
-	})
-	if res != nil || err != nil {
-		if err != nil {
-			err = errors.Wrap(err, "create or patch address")
-		}
-		return unwrapResult(res), err
-	}
-
-	err = wait.PollUntilContextTimeout(
-		ctx,
-		addressCachePollInterval,
-		addressCachePollTimeout,
-		true,
-		func(ctx context.Context) (bool, error) {
-			key := client.ObjectKeyFromObject(&address)
-			if getErr := r.Client.Get(ctx, key, &ipamv1.IPAddress{}); getErr != nil {
-				return false, client.IgnoreNotFound(getErr)
-			}
-			return true, nil
-		},
-	)
+	address, operationResult, result, err := r.ensureAddress(ctx, claim, pool, handler)
 	if err != nil {
-		return ctrl.Result{}, errors.Wrapf(
-			err,
-			"wait for IPAddress %s/%s cache visibility",
-			address.Namespace,
-			address.Name,
-		)
+		return result, err
 	}
 
 	logger.Info(
@@ -263,7 +237,88 @@ func (r *ClaimReconciler) reconcileClaimAddress(
 			fmt.Sprintf("Allocated IP address %s", address.Spec.Address),
 		)
 	}
+	setClaimReady(
+		claim,
+		metav1.ConditionTrue,
+		reasonAddressAllocated,
+		fmt.Sprintf("IP address %s allocated", address.Spec.Address),
+	)
 	return ctrl.Result{}, nil
+}
+
+// ensureAddress creates or patches the IPAddress backing claim and waits for it to become
+// visible in the client cache before returning.
+func (r *ClaimReconciler) ensureAddress(
+	ctx context.Context,
+	claim *ipamv1.IPAddressClaim,
+	pool client.Object,
+	handler ClaimHandler,
+) (ipamv1.IPAddress, controllerutil.OperationResult, ctrl.Result, error) {
+	address := NewIPAddress(claim, pool)
+	var res *ctrl.Result
+	operationResult, err := controllerutil.CreateOrPatch(ctx, r.Client, &address, func() error {
+		var ensureErr error
+		if res, ensureErr = handler.EnsureAddress(ctx, &address); ensureErr != nil {
+			return ensureErr
+		}
+		if ownerRefErr := ensureIPAddressOwnerReferences(r.Scheme, &address, claim, pool); ownerRefErr != nil {
+			return errors.Wrap(ownerRefErr, "ensure owner references")
+		}
+		if val, ok := claim.Labels[clusterv1.ClusterNameLabel]; ok {
+			if address.Labels == nil {
+				address.Labels = map[string]string{}
+			}
+			address.Labels[clusterv1.ClusterNameLabel] = val
+		}
+		_ = controllerutil.AddFinalizer(&address, ProtectAddressFinalizer)
+		return nil
+	})
+	if res != nil || err != nil {
+		if err != nil {
+			reason := ipamv1.IPAddressClaimReadyAllocationFailedReason
+			if res != nil {
+				reason = ipamv1.IPAddressClaimReadyPoolExhaustedReason
+			}
+			setClaimReady(claim, metav1.ConditionFalse, reason, err.Error())
+			err = errors.Wrap(err, "create or patch address")
+		}
+		return address, operationResult, unwrapResult(res), err
+	}
+
+	err = wait.PollUntilContextTimeout(
+		ctx,
+		addressCachePollInterval,
+		addressCachePollTimeout,
+		true,
+		func(ctx context.Context) (bool, error) {
+			key := client.ObjectKeyFromObject(&address)
+			if getErr := r.Client.Get(ctx, key, &ipamv1.IPAddress{}); getErr != nil {
+				return false, client.IgnoreNotFound(getErr)
+			}
+			return true, nil
+		},
+	)
+	if err != nil {
+		setClaimReady(claim, metav1.ConditionFalse, ipamv1.IPAddressClaimReadyAllocationFailedReason, err.Error())
+		return address, operationResult, ctrl.Result{}, errors.Wrapf(
+			err,
+			"wait for IPAddress %s/%s cache visibility",
+			address.Namespace,
+			address.Name,
+		)
+	}
+	return address, operationResult, ctrl.Result{}, nil
+}
+
+// setClaimReady sets the IPAddressClaim's Ready condition per the Cluster API IPAM provider
+// contract (https://cluster-api.sigs.k8s.io/developer/providers/contracts/ipam).
+func setClaimReady(claim *ipamv1.IPAddressClaim, status metav1.ConditionStatus, reason, message string) {
+	conditions.Set(claim, metav1.Condition{
+		Type:    ipamv1.IPAddressClaimReadyCondition,
+		Status:  status,
+		Reason:  reason,
+		Message: message,
+	})
 }
 
 func (r *ClaimReconciler) getLinkedCluster(
