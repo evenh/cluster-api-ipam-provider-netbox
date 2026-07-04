@@ -41,6 +41,11 @@ const (
 	valkeyImage            = "valkey/valkey:9-alpine"
 	netboxCustomFieldName  = defaultClaimUIDField
 	netboxCustomFieldLabel = "Cluster API Claim UID"
+	netboxGatewayField     = "gateway"
+	netboxGatewayLabel     = "Default Gateway"
+	// namespacedGateway is stored in the namespaced prefix's gateway custom field so the e2e run
+	// exercises the NetBox-as-source-of-truth gateway path end to end.
+	namespacedGateway      = "10.203.1.1"
 	netboxSecretKey        = "cluster-api-ipam-provider-netbox-secret-key-for-e2e-tests-0123456789abcdef"
 	kindClusterName        = "netbox-ipam-e2e"
 	managerStartupWait     = 5 * time.Second
@@ -181,6 +186,9 @@ func (e *Environment) Setup() error {
 		if err := e.ensureCustomField(e.ctx, fieldName); err != nil {
 			return err
 		}
+	}
+	if err := e.netboxClient.ensurePrefixCustomField(e.ctx, netboxGatewayField, netboxGatewayLabel); err != nil {
+		return err
 	}
 	if err := e.createKindCluster(e.ctx); err != nil {
 		return err
@@ -755,7 +763,13 @@ func extractTagNames(tags []netBoxTag) []string {
 }
 
 func (e *Environment) CreatePrefix(ctx context.Context, cidr string) (*NetBoxPrefix, error) {
-	return e.netboxClient.createPrefix(ctx, cidr)
+	return e.netboxClient.createPrefix(ctx, cidr, nil)
+}
+
+// CreatePrefixWithGateway creates a prefix and stores gateway in its gateway custom field, so the
+// provider resolves IPAddress.spec.gateway from NetBox for addresses allocated from it.
+func (e *Environment) CreatePrefixWithGateway(ctx context.Context, cidr, gateway string) (*NetBoxPrefix, error) {
+	return e.netboxClient.createPrefix(ctx, cidr, map[string]any{netboxGatewayField: gateway})
 }
 
 //nolint:nilnil // nil, nil is this test helper's "not found" result; callers check the pointer.
@@ -898,16 +912,56 @@ func renderValues(values map[string]string) string {
 	return builder.String()
 }
 
-func (c *netBoxAdminClient) createPrefix(ctx context.Context, cidr string) (*NetBoxPrefix, error) {
+func (c *netBoxAdminClient) createPrefix(
+	ctx context.Context,
+	cidr string,
+	customFields map[string]any,
+) (*NetBoxPrefix, error) {
 	request := map[string]any{
 		"prefix": cidr,
 		"status": "active",
+	}
+	if len(customFields) > 0 {
+		request["custom_fields"] = customFields
 	}
 	var prefix NetBoxPrefix
 	if err := c.do(ctx, http.MethodPost, "/api/ipam/prefixes/", nil, request, &prefix, http.StatusCreated); err != nil {
 		return nil, fmt.Errorf("create prefix %q: %w", cidr, err)
 	}
 	return &prefix, nil
+}
+
+func (c *netBoxAdminClient) ensurePrefixCustomField(ctx context.Context, fieldName, label string) error {
+	query := url.Values{}
+	query.Set("name", fieldName)
+	query.Set("object_type", "ipam.prefix")
+
+	var result netBoxListResponse[map[string]any]
+	if err := c.do(ctx, http.MethodGet, "/api/extras/custom-fields/", query, nil, &result, http.StatusOK); err != nil {
+		return fmt.Errorf("list custom fields: %w", err)
+	}
+	if len(result.Results) > 0 {
+		return nil
+	}
+
+	request := map[string]any{
+		"object_types": []string{"ipam.prefix"},
+		"type":         "text",
+		"name":         fieldName,
+		"label":        label,
+	}
+	if err := c.do(
+		ctx,
+		http.MethodPost,
+		"/api/extras/custom-fields/",
+		nil,
+		request,
+		nil,
+		http.StatusCreated,
+	); err != nil {
+		return fmt.Errorf("create prefix custom field %q: %w", fieldName, err)
+	}
+	return nil
 }
 
 func (c *netBoxAdminClient) listIPAddresses(

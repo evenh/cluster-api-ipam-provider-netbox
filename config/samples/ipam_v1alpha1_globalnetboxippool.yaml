@@ -4,6 +4,10 @@
 #
 # Same NetBox preconditions as NetBoxIPPool: the prefix and the "cluster_api_claim_uid" custom
 # field must already exist in NetBox.
+#
+# Gateway support works identically to NetBoxIPPool (see that sample for the full explanation):
+# spec.gatewayCustomField (default "gateway") on the NetBox Prefix > custom field, else
+# prefixes[].gateway, else spec.gateway. All optional; omit to leave spec.gateway unset.
 apiVersion: ipam.cluster.x-k8s.io/v1alpha1
 kind: GlobalNetBoxIPPool
 metadata:
@@ -17,6 +21,8 @@ spec:
     namespace: default
   prefixes:
     - cidr: 10.1.0.0/16
+      # Optional per-prefix static gateway (see the NetBoxIPPool sample for precedence details).
+      # gateway: 10.1.0.1
   metadataDefaults:
     dnsName: shared.example.com
     tags:

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -163,6 +164,10 @@ func (h *netboxClaimHandler) EnsureAddress(
 		address.Spec.Address = existing.Address
 		prefix := existing.Prefix
 		address.Spec.Prefix = &prefix
+		// A reused NetBox IP carries no prefix ID, so match it to a resolved prefix by CIDR
+		// containment to recover the gateway.
+		details := h.gatewayDetails(ctx, netboxClient, poolSpec, h.pool.PoolStatus().ResolvedPrefixes)
+		address.Spec.Gateway = gatewayForAddress(details, existing.Address)
 		return nil, nil
 	}
 
@@ -206,10 +211,78 @@ func (h *netboxClaimHandler) EnsureAddress(
 		address.Spec.Address = allocation.Address
 		prefix := allocation.Prefix
 		address.Spec.Prefix = &prefix
+		address.Spec.Gateway = gatewayForPrefixID(
+			h.gatewayDetails(ctx, netboxClient, poolSpec, prefixIDs),
+			prefixID,
+		)
 		return nil, nil
 	}
 
 	return &ctrl.Result{RequeueAfter: poolExhaustedRequeueAfter}, errors.New("pool exhausted")
+}
+
+// gatewayDetails returns the pool's resolved prefix details (CIDR + gateway), preferring the cached
+// status written by the pool reconciler and falling back to a live NetBox lookup only when the
+// cache is cold (e.g. a brand new pool, or a status written by a pre-gateway version). Gateway data
+// is optional, so any lookup failure is logged and yields nil rather than failing the allocation;
+// invalid or family-mismatched gateways are surfaced as a not-ready condition by the pool
+// reconciler, which is the enforcement point.
+func (h *netboxClaimHandler) gatewayDetails(
+	ctx context.Context,
+	netboxClient nb.Client,
+	poolSpec *ipamv1alpha1.NetBoxIPPoolSpec,
+	prefixIDs []int32,
+) []ipamv1alpha1.ResolvedPrefix {
+	if details := h.pool.PoolStatus().ResolvedPrefixDetails; len(details) > 0 {
+		return details
+	}
+
+	logger := ctrl.LoggerFrom(ctx)
+	if len(prefixIDs) == 0 {
+		ids, err := netboxClient.ResolvePrefixIDs(ctx, poolSpec.Prefixes)
+		if err != nil {
+			logger.Error(err, "resolve prefixes for gateway lookup failed")
+			return nil
+		}
+		prefixIDs = ids
+	}
+	fetched, err := netboxClient.GetPrefixDetails(ctx, prefixIDs)
+	if err != nil {
+		logger.Error(err, "get prefix details for gateway lookup failed")
+		return nil
+	}
+	resolved, _, err := buildResolvedPrefixes(poolSpec, prefixIDs, fetched)
+	if err != nil {
+		logger.Error(err, "resolve gateway for lookup failed")
+		return nil
+	}
+	return resolved
+}
+
+func gatewayForPrefixID(details []ipamv1alpha1.ResolvedPrefix, prefixID int32) string {
+	for _, detail := range details {
+		if detail.ID == prefixID {
+			return detail.Gateway
+		}
+	}
+	return ""
+}
+
+func gatewayForAddress(details []ipamv1alpha1.ResolvedPrefix, address string) string {
+	addr, err := netip.ParseAddr(address)
+	if err != nil {
+		return ""
+	}
+	for _, detail := range details {
+		if detail.Gateway == "" || detail.CIDR == "" {
+			continue
+		}
+		prefix, parseErr := netip.ParsePrefix(detail.CIDR)
+		if parseErr == nil && prefix.Contains(addr) {
+			return detail.Gateway
+		}
+	}
+	return ""
 }
 
 func (h *netboxClaimHandler) ReleaseAddress(ctx context.Context) (_ *ctrl.Result, err error) {

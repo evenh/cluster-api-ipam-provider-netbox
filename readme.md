@@ -13,6 +13,7 @@ The provider is an allocator, not an importer: it never discovers pre-existing N
 - creates missing NetBox tags on demand (including the ownership tag used to find and clean up its own addresses later)
 - resolves NetBox prefixes by ID or by CIDR, but never creates them — the prefixes must already exist in NetBox
 - checks for (but does not create) the NetBox custom field used to track the owning `IPAddressClaim`'s UID
+- optionally populates `IPAddress.spec.gateway` so consumers read the gateway from the pool instead of hardcoding it — resolved per prefix from a NetBox custom field, with static pool/per-prefix fallbacks
 - supports both namespaced and cluster-scoped pools
 - supports IPv4 and IPv6 allocation flows
 - sets the Cluster API IPAM `Ready` condition on claims (`AllocationFailed`/`PoolNotReady`/`PoolExhausted` on failure), per the [IPAM provider contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/ipam)
@@ -27,6 +28,16 @@ For each prefix a pool will allocate from:
 2. A text custom field must exist on the IPAM > IP Address object type to track the claim UID (`cluster_api_claim_uid` by default, configurable per pool via `spec.claimUIDCustomField`).
 
 The provider creates tags and IP address records as needed, but will not create prefixes or the custom field definition — pool reconciliation fails until both exist.
+
+### Optional: gateway resolution
+
+To have the provider set `IPAddress.spec.gateway` (so consumers such as CAPV read the gateway from the pool rather than hardcoding a static `gateway4`), configure a gateway source. Resolution is per prefix, in priority order:
+
+1. **NetBox prefix custom field** — a text custom field on the IPAM > **Prefix** object type, named by `spec.gatewayCustomField` (default `gateway`). This keeps NetBox the source of truth. Unlike the claim UID field it is **optional**: a prefix with no value simply falls through to the static fallbacks, so pool reconciliation does not fail if it is absent. Set `spec.gatewayCustomField: ""` to disable NetBox gateway lookups entirely.
+2. **Per-prefix static** — `spec.prefixes[].gateway`.
+3. **Pool-level static** — `spec.gateway`, applied to allocations whose address family matches.
+
+Leave all three unset to omit `spec.gateway` (the default; pre-gateway behaviour is preserved). A resolved gateway must be a valid IP of the same family as the prefix, or the pool goes `Ready=False` (`PrefixResolutionFailed`); a gateway that falls inside the prefix's allocatable range is allowed but raises a warning event, since NetBox could otherwise hand it out as a normal address unless it is reserved.
 
 ## Pool Types
 

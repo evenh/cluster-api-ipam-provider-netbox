@@ -43,6 +43,7 @@ const (
 	reasonPoolReady              = "PoolReady"
 	reasonPrefixResolutionFailed = "PrefixResolutionFailed"
 	reasonDeletionBlocked        = "DeletionBlocked"
+	reasonGatewayInRange         = "GatewayInAllocatableRange"
 )
 
 type statusPool interface {
@@ -80,7 +81,7 @@ func reconcilePoolStatus(
 	// events would just move the N+1 NetBox call problem here from the claim controller.
 	var resolveErr error
 	if len(status.ResolvedPrefixes) == 0 || previousObservedGeneration != pool.GetGeneration() {
-		resolveErr = resolvePoolPrefixes(ctx, c, newClientFunc, requestTimeout, pool)
+		resolveErr = resolvePoolPrefixes(ctx, c, recorder, newClientFunc, requestTimeout, pool)
 	}
 	setPoolReadyCondition(pool, resolveErr)
 	ensureClusterNameLabel(pool, pool.PoolSpec().ClusterName)
@@ -107,11 +108,13 @@ func reconcilePoolStatus(
 }
 
 // resolvePoolPrefixes resolves the pool's configured prefixes against NetBox and caches
-// the result in status.resolvedPrefixes, so claim reconciles can reuse it instead of
-// resolving the same, spec-invariant prefixes on every single allocation attempt.
+// the result — prefix IDs plus each prefix's CIDR and resolved gateway — in the pool status, so
+// claim reconciles can reuse it instead of resolving the same, spec-invariant prefixes and gateways
+// on every single allocation attempt.
 func resolvePoolPrefixes(
 	ctx context.Context,
 	c client.Client,
+	recorder reconcileutil.EventRecorder,
 	newClientFunc func(nb.ConnectionConfig) (nb.Client, error),
 	requestTimeout time.Duration,
 	pool statusPool,
@@ -136,8 +139,93 @@ func resolvePoolPrefixes(
 		return nb.SanitizedError(err)
 	}
 
+	details, err := resolvePrefixDetails(ctx, netboxClient, recorder, pool, prefixIDs)
+	if err != nil {
+		return err
+	}
+
 	pool.PoolStatus().ResolvedPrefixes = prefixIDs
+	pool.PoolStatus().ResolvedPrefixDetails = details
 	return nil
+}
+
+// resolvePrefixDetails fetches each resolved prefix's CIDR and custom fields from NetBox and derives
+// its gateway. prefixIDs is aligned index-for-index with poolSpec.Prefixes (ResolvePrefixIDs emits
+// exactly one ID per configured reference, in order), so the per-prefix static gateway is read from
+// the matching spec entry.
+func resolvePrefixDetails(
+	ctx context.Context,
+	netboxClient nb.Client,
+	recorder reconcileutil.EventRecorder,
+	pool statusPool,
+	prefixIDs []int32,
+) ([]ipamv1alpha1.ResolvedPrefix, error) {
+	logger := ctrl.LoggerFrom(ctx)
+	poolSpec := pool.PoolSpec()
+
+	fetched, err := netboxClient.GetPrefixDetails(ctx, prefixIDs)
+	if err != nil {
+		logger.Error(err, "get NetBox prefix details failed")
+		return nil, nb.SanitizedError(err)
+	}
+
+	resolved, inRangeIDs, err := buildResolvedPrefixes(poolSpec, prefixIDs, fetched)
+	if err != nil {
+		logger.Error(err, "resolve gateway failed")
+		return nil, err
+	}
+	if recorder != nil {
+		for _, id := range inRangeIDs {
+			recorder.RecordWarning(
+				pool,
+				reasonGatewayInRange,
+				"ResolveGateway",
+				fmt.Sprintf(
+					"Gateway for prefix %d lies within its allocatable range; "+
+						"mark it reserved in NetBox so it is not handed out as a normal address",
+					id,
+				),
+			)
+		}
+	}
+	return resolved, nil
+}
+
+// buildResolvedPrefixes derives the cached ResolvedPrefix entries (CIDR + gateway) for prefixIDs,
+// which are aligned index-for-index with poolSpec.Prefixes (ResolvePrefixIDs emits one ID per
+// configured reference, in order). It returns the resolved entries plus the IDs whose gateway falls
+// inside the prefix's allocatable range (advisory only, surfaced as warnings by the pool
+// reconciler). A gateway that is an invalid IP or a family mismatch is returned as an error.
+func buildResolvedPrefixes(
+	poolSpec *ipamv1alpha1.NetBoxIPPoolSpec,
+	prefixIDs []int32,
+	fetched []nb.PrefixDetail,
+) ([]ipamv1alpha1.ResolvedPrefix, []int32, error) {
+	detailByID := make(map[int32]nb.PrefixDetail, len(fetched))
+	for _, detail := range fetched {
+		detailByID[detail.ID] = detail
+	}
+
+	resolved := make([]ipamv1alpha1.ResolvedPrefix, 0, len(prefixIDs))
+	var inRangeIDs []int32
+	for i, id := range prefixIDs {
+		var perPrefixStatic string
+		if i < len(poolSpec.Prefixes) {
+			perPrefixStatic = poolSpec.Prefixes[i].Gateway
+		}
+		detail := detailByID[id]
+		customFieldValue := nb.CustomFieldString(detail.CustomFields, poolSpec.GatewayCustomField)
+
+		gateway, inRange, err := nb.ResolveGateway(detail.CIDR, customFieldValue, perPrefixStatic, poolSpec.Gateway)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve gateway for prefix %d: %w", id, err)
+		}
+		if inRange {
+			inRangeIDs = append(inRangeIDs, id)
+		}
+		resolved = append(resolved, ipamv1alpha1.ResolvedPrefix{ID: id, CIDR: detail.CIDR, Gateway: gateway})
+	}
+	return resolved, inRangeIDs, nil
 }
 
 func setPoolReadyCondition(pool statusPool, resolveErr error) {

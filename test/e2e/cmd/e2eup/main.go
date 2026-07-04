@@ -63,7 +63,7 @@ func run() error {
 		return fmt.Errorf("setup: %w", err)
 	}
 
-	namespacedPrefix, err := env.CreatePrefix(ctx, "10.203.1.0/24")
+	namespacedPrefix, err := env.CreatePrefixWithGateway(ctx, "10.203.1.0/24", "10.203.1.1")
 	if err != nil {
 		return fmt.Errorf("create namespaced prefix: %w", err)
 	}

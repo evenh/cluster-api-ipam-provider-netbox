@@ -70,6 +70,99 @@ func TestReconcilePoolStatus(t *testing.T) {
 	t.Run("removes finalizer when deleting empty pool", func(t *testing.T) {
 		testReconcilePoolStatusRemovesFinalizer(ctx, t, scheme)
 	})
+	t.Run("caches resolved gateway and warns when it is in range", func(t *testing.T) {
+		testReconcilePoolStatusCachesGateway(ctx, t, scheme)
+	})
+	t.Run("reports Ready=False when a gateway has a mismatched family", func(t *testing.T) {
+		testReconcilePoolStatusGatewayFamilyMismatch(ctx, t, scheme)
+	})
+}
+
+func testReconcilePoolStatusCachesGateway(ctx context.Context, t *testing.T, scheme *runtime.Scheme) {
+	t.Helper()
+
+	pool := &ipamv1alpha1.NetBoxIPPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: "default", Generation: 1},
+		Spec: ipamv1alpha1.NetBoxIPPoolSpec{
+			ConnectionSecretRef: ipamv1alpha1.NamespacedSecretReference{Name: "netbox"},
+			GatewayCustomField:  "gateway",
+			Prefixes:            []ipamv1alpha1.NetBoxPrefixReference{{ID: int32Ptr(1)}},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&ipamv1.IPAddress{}, index.IPAddressPoolRefCombinedField, index.IPAddressByCombinedPoolRef).
+		WithObjects(newPoolTestSecret()).
+		Build()
+
+	newClientFunc := func(nb.ConnectionConfig) (nb.Client, error) {
+		return &fakeNetBoxClient{
+			resolvedPrefixIDs: []int32{1},
+			prefixDetails: []nb.PrefixDetail{{
+				ID:           1,
+				CIDR:         "10.0.0.0/24",
+				CustomFields: map[string]any{"gateway": "10.0.0.1"},
+			}},
+		}, nil
+	}
+
+	recorder := events.NewFakeRecorder(1)
+	base := reconcileutil.ControllerBase{Recorder: recorder}
+	if err := reconcilePoolStatus(
+		ctx,
+		k8sClient,
+		base,
+		newClientFunc,
+		time.Second,
+		pool,
+		ipamv1alpha1.NetBoxIPPoolKind,
+	); err != nil {
+		t.Fatalf("reconcilePoolStatus() error = %v", err)
+	}
+
+	if len(pool.Status.ResolvedPrefixDetails) != 1 {
+		t.Fatalf("expected 1 resolved prefix detail, got %#v", pool.Status.ResolvedPrefixDetails)
+	}
+	got := pool.Status.ResolvedPrefixDetails[0]
+	if got.ID != 1 || got.CIDR != "10.0.0.0/24" || got.Gateway != "10.0.0.1" {
+		t.Fatalf("unexpected resolved prefix detail: %#v", got)
+	}
+	event := <-recorder.Events
+	if !strings.Contains(event, "Warning") || !strings.Contains(event, reasonGatewayInRange) {
+		t.Fatalf("expected an in-range gateway warning, got: %q", event)
+	}
+}
+
+func testReconcilePoolStatusGatewayFamilyMismatch(ctx context.Context, t *testing.T, scheme *runtime.Scheme) {
+	t.Helper()
+
+	pool := &ipamv1alpha1.NetBoxIPPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: "default", Generation: 1},
+		Spec: ipamv1alpha1.NetBoxIPPoolSpec{
+			ConnectionSecretRef: ipamv1alpha1.NamespacedSecretReference{Name: "netbox"},
+			Prefixes:            []ipamv1alpha1.NetBoxPrefixReference{{ID: int32Ptr(1), Gateway: "2001:db8::1"}},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&ipamv1.IPAddress{}, index.IPAddressPoolRefCombinedField, index.IPAddressByCombinedPoolRef).
+		WithObjects(newPoolTestSecret()).
+		Build()
+
+	newClientFunc := func(nb.ConnectionConfig) (nb.Client, error) {
+		return &fakeNetBoxClient{
+			resolvedPrefixIDs: []int32{1},
+			prefixDetails:     []nb.PrefixDetail{{ID: 1, CIDR: "10.0.0.0/24"}},
+		}, nil
+	}
+
+	err := reconcilePoolStatus(ctx, k8sClient, nil, newClientFunc, time.Second, pool, ipamv1alpha1.NetBoxIPPoolKind)
+	if err == nil {
+		t.Fatal("expected reconcilePoolStatus() to fail on a family-mismatched gateway")
+	}
+	if len(pool.Status.Conditions) != 1 || pool.Status.Conditions[0].Reason != reasonPrefixResolutionFailed {
+		t.Fatalf("expected Ready=False/%s, got: %#v", reasonPrefixResolutionFailed, pool.Status.Conditions)
+	}
 }
 
 func testReconcilePoolStatusUpdatesAllocatedCount(ctx context.Context, t *testing.T, scheme *runtime.Scheme) {

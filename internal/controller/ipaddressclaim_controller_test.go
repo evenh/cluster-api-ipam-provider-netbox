@@ -144,6 +144,100 @@ func TestEnsureAddress(t *testing.T) {
 	t.Run("requeues when every prefix is exhausted", func(t *testing.T) {
 		testEnsureAddressRequeuesWhenExhausted(ctx, t, scheme, secret, pool, claim)
 	})
+	t.Run("sets gateway from cached prefix details on fresh allocation", func(t *testing.T) {
+		testEnsureAddressSetsGatewayFromCache(ctx, t, scheme, secret, pool, claim)
+	})
+	t.Run("sets gateway on reuse by matching the address to a prefix CIDR", func(t *testing.T) {
+		testEnsureAddressSetsGatewayOnReuse(ctx, t, scheme, secret, pool, claim)
+	})
+}
+
+func testEnsureAddressSetsGatewayFromCache(
+	ctx context.Context,
+	t *testing.T,
+	scheme *runtime.Scheme,
+	secret *corev1.Secret,
+	pool *ipamv1alpha1.NetBoxIPPool,
+	claim *ipamv1.IPAddressClaim,
+) {
+	t.Helper()
+
+	fakeNetBox := &fakeNetBoxClient{
+		allocations: map[int32]fakeAllocationResult{
+			100: {address: &nb.AllocatedAddress{ID: 42, Address: "10.0.0.5", Prefix: 24}},
+		},
+	}
+	cachedPool := pool.DeepCopy()
+	cachedPool.Status.ResolvedPrefixes = []int32{100}
+	cachedPool.Status.ResolvedPrefixDetails = []ipamv1alpha1.ResolvedPrefix{
+		{ID: 100, CIDR: "10.0.0.0/24", Gateway: "10.0.0.1"},
+	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(secret.DeepCopy(), cachedPool.DeepCopy()).
+		Build()
+	handler := &netboxClaimHandler{
+		Client: k8sClient,
+		claim:  claim.DeepCopy(),
+		pool:   cachedPool,
+		newClientFunc: func(nb.ConnectionConfig) (nb.Client, error) {
+			return fakeNetBox, nil
+		},
+	}
+
+	address := &ipamv1.IPAddress{}
+	if _, err := handler.EnsureAddress(ctx, address); err != nil {
+		t.Fatalf("EnsureAddress() error = %v", err)
+	}
+	if address.Spec.Gateway != "10.0.0.1" {
+		t.Fatalf("expected gateway 10.0.0.1 from cache, got %q", address.Spec.Gateway)
+	}
+	if fakeNetBox.prefixDetailsCalls != 0 {
+		t.Fatalf("expected no live GetPrefixDetails call when cache is warm, got %d", fakeNetBox.prefixDetailsCalls)
+	}
+}
+
+func testEnsureAddressSetsGatewayOnReuse(
+	ctx context.Context,
+	t *testing.T,
+	scheme *runtime.Scheme,
+	secret *corev1.Secret,
+	pool *ipamv1alpha1.NetBoxIPPool,
+	claim *ipamv1.IPAddressClaim,
+) {
+	t.Helper()
+
+	fakeNetBox := &fakeNetBoxClient{
+		findResult: &nb.AllocatedAddress{ID: 42, Address: "10.0.0.5", Prefix: 24},
+	}
+	cachedPool := pool.DeepCopy()
+	cachedPool.Status.ResolvedPrefixes = []int32{100}
+	cachedPool.Status.ResolvedPrefixDetails = []ipamv1alpha1.ResolvedPrefix{
+		{ID: 100, CIDR: "10.0.0.0/24", Gateway: "10.0.0.1"},
+	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(secret.DeepCopy(), cachedPool.DeepCopy()).
+		Build()
+	handler := &netboxClaimHandler{
+		Client: k8sClient,
+		claim:  claim.DeepCopy(),
+		pool:   cachedPool,
+		newClientFunc: func(nb.ConnectionConfig) (nb.Client, error) {
+			return fakeNetBox, nil
+		},
+	}
+
+	address := &ipamv1.IPAddress{}
+	if _, err := handler.EnsureAddress(ctx, address); err != nil {
+		t.Fatalf("EnsureAddress() error = %v", err)
+	}
+	if address.Spec.Address != "10.0.0.5" {
+		t.Fatalf("expected reused address 10.0.0.5, got %q", address.Spec.Address)
+	}
+	if address.Spec.Gateway != "10.0.0.1" {
+		t.Fatalf("expected gateway 10.0.0.1 matched by CIDR containment, got %q", address.Spec.Gateway)
+	}
 }
 
 func testEnsureAddressAllocatesUsingResolvedPrefixes(
@@ -519,6 +613,9 @@ type fakeNetBoxClient struct {
 	resolvedPrefixIDs   []int32
 	resolveErr          error
 	resolveCalls        int
+	prefixDetails       []nb.PrefixDetail
+	prefixDetailsErr    error
+	prefixDetailsCalls  int
 	ensureFieldName     string
 	ensureErr           error
 	allocations         map[int32]fakeAllocationResult
@@ -545,6 +642,11 @@ func (f *fakeNetBoxClient) ResolvePrefixIDs(
 ) ([]int32, error) {
 	f.resolveCalls++
 	return f.resolvedPrefixIDs, f.resolveErr
+}
+
+func (f *fakeNetBoxClient) GetPrefixDetails(_ context.Context, _ []int32) ([]nb.PrefixDetail, error) {
+	f.prefixDetailsCalls++
+	return f.prefixDetails, f.prefixDetailsErr
 }
 
 func (f *fakeNetBoxClient) EnsureIPAddressCustomField(_ context.Context, fieldName string) error {

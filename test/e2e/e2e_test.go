@@ -134,7 +134,7 @@ func provisionEnvironment(ctx context.Context, t *testing.T, projectDir string) 
 		t.Fatalf("setup e2e environment: %v", err)
 	}
 
-	namespacedPrefix, err := env.CreatePrefix(ctx, "10.203.1.0/24")
+	namespacedPrefix, err := env.CreatePrefixWithGateway(ctx, "10.203.1.0/24", namespacedGateway)
 	if err != nil {
 		env.Cleanup()
 		t.Fatalf("create namespaced prefix: %v", err)

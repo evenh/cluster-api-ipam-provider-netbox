@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	ipamv1alpha1 "github.com/evenh/cluster-api-ipam-provider-netbox/api/v1alpha1"
 	"github.com/evenh/cluster-api-ipam-provider-netbox/internal/version"
 )
+
+var errUnexpectedRequest = errors.New("unexpected request")
 
 func TestSanitizedErrorStripsNetBoxResponseBody(t *testing.T) {
 	client := newTestAPIClient(
@@ -205,6 +208,67 @@ func TestResolvePrefixIDs(t *testing.T) {
 	}
 	if !slices.Equal(ids, []int32{88}) {
 		t.Fatalf("ResolvePrefixIDs() = %#v, want [88]", ids)
+	}
+}
+
+func TestGetPrefixDetails(t *testing.T) {
+	var gotIDIn string
+	client := newTestAPIClient(
+		roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.Method != http.MethodGet || r.URL.Path != "/api/ipam/prefixes/" {
+				return jsonResponse(r, http.StatusNotFound, map[string]any{"detail": "not found"}), nil
+			}
+			gotIDIn = r.URL.Query().Get("id__in")
+			return jsonResponse(r, http.StatusOK, map[string]any{
+				"count": 2,
+				"results": []map[string]any{
+					{
+						"id":            88,
+						"prefix":        "10.20.0.0/24",
+						"custom_fields": map[string]any{"gateway": "10.20.0.1"},
+					},
+					{
+						"id":            42,
+						"prefix":        "10.0.0.0/24",
+						"custom_fields": map[string]any{"gateway": nil},
+					},
+				},
+			}), nil
+		}),
+	)
+
+	// Request order [42, 88] must be preserved in the response regardless of NetBox's ordering.
+	details, err := client.GetPrefixDetails(context.Background(), []int32{42, 88})
+	if err != nil {
+		t.Fatalf("GetPrefixDetails() error = %v", err)
+	}
+	if gotIDIn != "42,88" {
+		t.Fatalf("id__in = %q, want %q", gotIDIn, "42,88")
+	}
+	if len(details) != 2 {
+		t.Fatalf("GetPrefixDetails() returned %d details, want 2", len(details))
+	}
+	if details[0].ID != 42 || details[0].CIDR != "10.0.0.0/24" {
+		t.Fatalf("first detail = %#v, want id 42 / 10.0.0.0/24", details[0])
+	}
+	if details[1].ID != 88 || details[1].CustomFields["gateway"] != "10.20.0.1" {
+		t.Fatalf("second detail = %#v, want id 88 with gateway custom field", details[1])
+	}
+}
+
+func TestGetPrefixDetailsEmptyReturnsNil(t *testing.T) {
+	client := newTestAPIClient(
+		roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			t.Fatalf("unexpected request for empty id list: %s", r.URL)
+			return nil, errUnexpectedRequest
+		}),
+	)
+	details, err := client.GetPrefixDetails(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("GetPrefixDetails() error = %v", err)
+	}
+	if details != nil {
+		t.Fatalf("GetPrefixDetails(nil) = %#v, want nil", details)
 	}
 }
 

@@ -41,11 +41,20 @@ const v2TokenPrefix = "nbt_"
 
 type Client interface {
 	ResolvePrefixIDs(ctx context.Context, refs []ipamv1alpha1.NetBoxPrefixReference) ([]int32, error)
+	GetPrefixDetails(ctx context.Context, ids []int32) ([]PrefixDetail, error)
 	EnsureIPAddressCustomField(ctx context.Context, fieldName string) error
 	AllocateIPAddress(ctx context.Context, prefixID int32, request AllocationRequest) (*AllocatedAddress, error)
 	FindIPAddressByClaimUID(ctx context.Context, ownershipTag, fieldName, claimUID string) (*AllocatedAddress, error)
 	FindIPAddressByAddress(ctx context.Context, ownershipTag, address string) (*AllocatedAddress, error)
 	DeleteIPAddress(ctx context.Context, id int32) error
+}
+
+// PrefixDetail carries the NetBox prefix fields the provider needs to resolve a gateway: the
+// CIDR (for family and containment checks) and the prefix's custom field values.
+type PrefixDetail struct {
+	ID           int32
+	CIDR         string
+	CustomFields map[string]any
 }
 
 type AllocationRequest struct {
@@ -93,8 +102,9 @@ type netBoxTag struct {
 }
 
 type netBoxPrefix struct {
-	ID     int32  `json:"id"`
-	Prefix string `json:"prefix"`
+	ID           int32          `json:"id"`
+	Prefix       string         `json:"prefix"`
+	CustomFields map[string]any `json:"custom_fields,omitempty"`
 }
 
 type netBoxIPAddress struct {
@@ -188,6 +198,46 @@ func (c *APIClient) ResolvePrefixIDs(ctx context.Context, refs []ipamv1alpha1.Ne
 		}
 	}
 	return ids, nil
+}
+
+// GetPrefixDetails fetches the CIDR and custom fields for the given NetBox prefix IDs in a single
+// list call. The returned slice preserves the input order; IDs NetBox does not return (e.g. a
+// prefix deleted out from under the pool) are omitted.
+func (c *APIClient) GetPrefixDetails(ctx context.Context, ids []int32) ([]PrefixDetail, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	idStrings := make([]string, 0, len(ids))
+	for _, id := range ids {
+		idStrings = append(idStrings, strconv.FormatInt(int64(id), 10))
+	}
+	query := url.Values{}
+	query.Set("id__in", strings.Join(idStrings, ","))
+
+	results, err := listAll[netBoxPrefix](ctx, c, "/api/ipam/prefixes/", query)
+	if err != nil {
+		return nil, fmt.Errorf("list prefix details: %w", err)
+	}
+
+	byID := make(map[int32]netBoxPrefix, len(results))
+	for _, prefix := range results {
+		byID[prefix.ID] = prefix
+	}
+
+	details := make([]PrefixDetail, 0, len(ids))
+	for _, id := range ids {
+		prefix, ok := byID[id]
+		if !ok {
+			continue
+		}
+		details = append(details, PrefixDetail{
+			ID:           prefix.ID,
+			CIDR:         strings.TrimSpace(prefix.Prefix),
+			CustomFields: prefix.CustomFields,
+		})
+	}
+	return details, nil
 }
 
 func (c *APIClient) EnsureIPAddressCustomField(ctx context.Context, fieldName string) error {

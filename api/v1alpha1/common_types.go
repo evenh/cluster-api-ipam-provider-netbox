@@ -56,6 +56,14 @@ type NetBoxPrefixReference struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	VRFID *int32 `json:"vrfID,omitempty"`
+	// Gateway is a static default gateway for addresses allocated from this prefix, written to
+	// IPAddress.spec.gateway. It is used only when the pool's gatewayCustomField is unset or the
+	// prefix carries no value for it in NetBox, and it overrides the pool-level spec.gateway. The
+	// value must be an IP address of the same family as the prefix.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=39
+	Gateway string `json:"gateway,omitempty"`
 }
 
 // NetBoxMetadata carries the supported v1 metadata mapping surface.
@@ -118,12 +126,41 @@ type NetBoxIPPoolSpec struct {
 	// +kubebuilder:default="active"
 	// +kubebuilder:validation:Enum=active;reserved;deprecated;dhcp;slaac
 	IPAddressStatus string `json:"ipAddressStatus,omitempty"`
+	// Gateway is a static default gateway written to IPAddress.spec.gateway for every allocation whose
+	// address family matches, used as the lowest-priority fallback. Resolution precedence is:
+	// the NetBox prefix custom field named by GatewayCustomField, then the per-prefix
+	// prefixes[].gateway, then this pool-level value. Leave all three unset to omit the gateway
+	// entirely (the default, preserving pre-gateway behaviour). Must be a valid IP address.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=39
+	Gateway string `json:"gateway,omitempty"`
+	// GatewayCustomField is the NetBox custom field read from each prefix to resolve that prefix's
+	// gateway, making NetBox the source of truth. Unlike ClaimUIDCustomField the provider does not
+	// require this field to exist: a prefix with no value simply falls back to the static gateways.
+	// Set it to the empty string to disable NetBox gateway resolution entirely.
+	// +optional
+	// +kubebuilder:default="gateway"
+	GatewayCustomField string `json:"gatewayCustomField,omitempty"`
 }
 
 // NetBoxPoolStatusAddresses summarises current Kubernetes-side allocations.
 type NetBoxPoolStatusAddresses struct {
 	// Allocated is the number of Kubernetes IPAddress objects currently referencing the pool.
 	Allocated int32 `json:"allocated"`
+}
+
+// ResolvedPrefix reports a NetBox prefix resolved for the pool, including its CIDR and the gateway
+// the controller resolved for it. The claim controller reads Gateway from here (keyed by ID) so
+// allocation never has to re-query NetBox for gateway details on the hot path.
+type ResolvedPrefix struct {
+	// ID is the NetBox prefix primary key.
+	ID int32 `json:"id"`
+	// CIDR is the prefix in CIDR notation, used to match reused addresses back to their prefix.
+	CIDR string `json:"cidr,omitempty"`
+	// Gateway is the resolved default gateway for addresses from this prefix, or empty if none.
+	// +optional
+	Gateway string `json:"gateway,omitempty"`
 }
 
 // NetBoxIPPoolStatus defines the observed state shared by both pool types.
@@ -137,6 +174,12 @@ type NetBoxIPPoolStatus struct {
 	// ResolvedPrefixes reports the concrete NetBox prefix IDs that the controller resolved for this pool.
 	// +optional
 	ResolvedPrefixes []int32 `json:"resolvedPrefixes,omitempty"`
+	// ResolvedPrefixDetails reports the resolved CIDR and gateway for each entry in ResolvedPrefixes,
+	// keyed by NetBox prefix ID. It is populated alongside ResolvedPrefixes on each resolution.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	ResolvedPrefixDetails []ResolvedPrefix `json:"resolvedPrefixDetails,omitempty"`
 	// Conditions reports the current reconciliation state of the pool.
 	// +listType=map
 	// +listMapKey=type

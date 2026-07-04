@@ -4,6 +4,14 @@
 # custom field must already exist in NetBox as a text field on the IPAM > IP Address object type
 # (Customization > Custom Fields). The provider allocates addresses from the prefix and creates
 # tags on demand, but it does not create prefixes or custom field definitions.
+#
+# Optional gateway support: allocated IPAddresses can carry spec.gateway so consumers (e.g. CAPV)
+# read the gateway from the pool instead of hardcoding it. The gateway is resolved per prefix in
+# priority order: (1) the NetBox prefix custom field named by spec.gatewayCustomField (default
+# "gateway"), (2) the per-prefix prefixes[].gateway, (3) the pool-level spec.gateway. To use option
+# (1) add a text custom field on the IPAM > Prefix object type and set it on each prefix; unlike the
+# claim UID field it is optional — a prefix without it just falls back to the static gateways. Leave
+# all three unset to omit spec.gateway entirely (the default).
 apiVersion: ipam.cluster.x-k8s.io/v1alpha1
 kind: NetBoxIPPool
 metadata:
@@ -21,9 +29,18 @@ spec:
   prefixes:
     # Reference a prefix by CIDR (resolved to a NetBox prefix ID at allocation time) ...
     - cidr: 10.0.0.0/24
+      # Optional per-prefix static gateway, used when the NetBox custom field is absent/empty.
+      # Overrides the pool-level spec.gateway below. Must match the prefix's address family.
+      gateway: 10.0.0.1
     # ... or by NetBox prefix ID directly, if you already know it. Prefixes are tried in order
     # until an address is allocated.
     # - id: 42
+  # gateway is the pool-level static fallback, applied to allocations whose family matches when no
+  # higher-priority gateway (NetBox custom field or per-prefix gateway) is resolved. Optional.
+  # gateway: 10.0.0.1
+  # gatewayCustomField names the NetBox Prefix custom field read for a per-prefix gateway. Defaults
+  # to "gateway"; set to "" to disable NetBox gateway resolution and rely only on the static values.
+  # gatewayCustomField: gateway
   metadataDefaults:
     dnsName: cluster.example.com
     tags:
